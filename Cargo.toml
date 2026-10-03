@@ -3,8 +3,12 @@ name = "freyacn_macros"
 version = "0.0.0"
 authors = ["Bright Madueke <maduekebright399@gmail.com>"]
 description = "Helper macros for freyacn"
-keywords = ["freya","freyacn", "proc_macro", "procmacro"]
-edition = "2018"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/brightmadueke/freyacn-macros"
+readme = "README.md"
+keywords = ["ui", "freyacn", "proc_macro", "procmacro"]
+categories = ["gui", "development-tools"]
 
 [lib]
 proc-macro = true
