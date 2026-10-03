@@ -12,11 +12,11 @@ use syn::{
 /// }
 /// it gives the
 #[proc_macro_attribute]
-pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
 
     let ItemFn {
-        mut attrs,
+        attrs,
         vis,
         sig,
         block,
@@ -48,10 +48,10 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     // Constructor that takes the same params
-    let constructor_params = fn_params.iter().map(|(name, ty)| {
+    let _constructor_params = fn_params.iter().map(|(name, ty)| {
         quote! {#name: #ty,}
     });
-    let constructor_inits = fn_params.iter().map(|(name, _)| {
+    let _constructor_inits = fn_params.iter().map(|(name, _)| {
         quote! {#name}
     });
 
@@ -233,7 +233,21 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         #fn_visibility fn #fn_name(#sig.inputs) -> #struct_name {
             let component_struct = #struct_name {
                 elements: Vec::new(),
-                key: DiffKey,
+                key: ::freyacn::__private::DiffKey::None,
+                background: None,
+                text_color: None,
+                padding_override: None,
+                margin_override: None,
+                width_override: None,
+                height_override: None,
+                min_width_override: None,
+                min_height_override: None,
+                max_width_override: None,
+                max_height_override: None,
+                border_width: None,
+                border_color: None,
+                opacity: None,
+                shadow: None,
                 #(#param_names),*
             }
         }
@@ -257,4 +271,5 @@ fn to_pascal_case(s: &str) -> String {
         .collect()
 }
 
-// todo write a god readme and lib.rs doc for the crat
+// todo write a god readme and lib.rs doc for the crate
+// todo make every parameter f the function beome a method in the struct for builder patterns
