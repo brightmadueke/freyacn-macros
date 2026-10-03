@@ -16,7 +16,7 @@ pub fn component(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
 
     let ItemFn {
-        attrs,
+        attrs: _attrs,
         vis,
         sig,
         block,
