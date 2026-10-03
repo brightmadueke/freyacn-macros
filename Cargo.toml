@@ -2,8 +2,8 @@
 name = "freyacn_macros"
 version = "0.0.0"
 authors = ["Bright Madueke <maduekebright399@gmail.com>"]
-description = "A `cargo generate` template for quick-starting a procedural macro crate"
-keywords = ["template", "proc_macro", "procmacro"]
+description = "Helper macros for freyacn"
+keywords = ["freya","freyacn", "proc_macro", "procmacro"]
 edition = "2018"
 
 [lib]
@@ -12,5 +12,5 @@ proc-macro = true
 [dependencies]
 quote = "1"
 proc-macro2 = "1.0"
-syn = "1.0"
+syn = { version = "2", features = ["full"] }
 
