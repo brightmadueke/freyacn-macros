@@ -62,6 +62,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[derive(Debug, PartialEq, Clone)]
         struct #struct_name {
             elements: Vec<Element>,
+            key: ::freyaDiffKey,
             #(#struct_fields),*
 
            /*
