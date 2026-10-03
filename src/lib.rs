@@ -62,7 +62,22 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[derive(Debug, PartialEq, Clone)]
         struct #struct_name {
             elements: Vec<Element>,
-            key: ::freyaDiffKey,
+            key: ::freyacn::__private::DiffKey,
+            corner_radius: f32,
+            background: Option<::freyacn::__private::Color>,
+            text_color: Option<::freyacn::__private::Color>,
+            padding_override: Option<::freyacn::__private::Gaps>,
+            margin_override: Option<::freyacn::__private::Gaps>,
+            width_override: Option<::freyacn::__private::Size>,
+            height_override: Option<::freyacn::__private::Size>,
+            min_width_override: Option<::freyacn::__private::Size>,
+            min_height_override: Option<::freyacn::__private::Size>,
+            max_width_override: Option<::freyacn::__private::Size>,
+            max_height_override: Option<::freyacn::__private::Size>,
+            border_width: Option<f32>,
+            border_color: Option<Color>,
+            opacity: Option<f32>,
+            shadow: Option<Shadow>,
             #(#struct_fields),*
 
            /*
@@ -72,20 +87,155 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
             */
         }
 
-        impl ::freya::elements::extensions::ChildrenExt for #struct_name {
-            fn get_children(&mut self) -> &mut Vec<Element> {
+        impl ::freyacn::__private::ChildrenExt for #struct_name {
+            fn get_children(&mut self) -> &mut Vec<::freyacn::__private::Element> {
                 &mut self.elements
             }
         }
 
-        impl ::freya::elements::extensions::KeyExt for #struct_name {
-            fn write_key(&mut self) -> &mut DiffKey {
+        impl ::freyacn::__private::KeyExt for #struct_name {
+            fn write_key(&mut self) -> &mut ::freyacn::__private::DiffKey {
                 &mut self.key
             }
         }
 
-        #fn_visibility fn #fn_name(#sig.inputs) -> ::freya::prelude::IntoElement {
-            let component_struct = #struct_name::new { #(#param_names),* }
+        impl ::freyacn::__private::BackgroundExt for #struct_name {
+            fn background(mut self, color: ::freyacn::__private::Color) -> Self {
+                self.background = Some(color);
+                self
+            }
+        }
+
+        impl ::freyacn::__private::ForegroundExt for #struct_name {
+            fn color(mut self, color: ::freyacn::__private::Color) -> Self {
+                self.text_color = Some(color);
+                self
+            }
+        }
+
+        impl ::freyacn::__private::SpacingExt for #struct_name {
+            fn padding(mut self, gaps: impl Into<::freyacn::__private::Gaps>) -> Self {
+                self.padding_override = Some(gaps.into());
+                self
+            }
+
+            fn margin(mut self, gaps: impl Into<::freyacn::__private::Gaps>) -> Self {
+                self.margin_override = Some(gaps.into());
+                self
+            }
+        }
+
+        impl ::freyacn::__private::SizingExt for #struct_name {
+            fn width(mut self, size: impl Into<::freyacn::__private::Size>) -> Self {
+                self.width_override = Some(size.into());
+                self
+            }
+
+            fn height(mut self, size: impl Into<::freyacn::__private::Size>) -> Self {
+                self.height_override = Some(size.into());
+                self
+            }
+
+            fn min_width(mut self, size: impl Into<::freyacn::__private::Size>) -> Self {
+                self.min_width_override = Some(size.into());
+                self
+            }
+
+            fn min_height(mut self, size: impl Into<::freyacn::__private::Size>) -> Self {
+                self.min_height_override = Some(size.into());
+                self
+            }
+
+            fn max_width(mut self, size: impl Into<::freyacn::__private::Size>) -> Self {
+                self.max_width_override = Some(size.into());
+                self
+            }
+
+            fn max_height(mut self, size: impl Into<::freyacn::__private::Size>) -> Self {
+                self.max_height_override = Some(size.into());
+                self
+            }
+        }
+
+        impl ::freyacn::__private::BorderExt for #struct_name {
+            fn border_width(mut self, width: f32) -> Self {
+                self.border_width = Some(width);
+                self
+            }
+
+            fn border_color(mut self, color: ::freyacn::__private::Color) -> Self {
+                self.border_color = Some(color);
+                self
+            }
+
+            fn corner_radius(mut self, radius: impl Into<::freyacn::__private::CornerRadius>) -> Self {
+                let radius = radius.into();
+                let uniform = radius
+                    .top_left
+                    .max(radius.top_right)
+                    .max(radius.bottom_left)
+                    .max(radius.bottom_right);
+                self.corner_radius = uniform;
+                self
+            }
+        }
+
+        impl ::freyacn::__private::EffectsExt for #struct_name {
+            fn opacity(mut self, opacity: f32) -> Self {
+                self.opacity = Some(opacity);
+                self
+            }
+
+            fn shadow(mut self, shadow: impl Into<Shadow>) -> Self {
+                self.shadow = Some(shadow.into());
+                self
+            }
+        }
+
+        impl ::freyacn::__private::CornerRadiusExt for #struct_name {
+            fn with_corner_radius(self, corner_radius: f32) -> Self {
+                self.corner_radius(corner_radius)
+            }
+        }
+
+        // ---- Color helpers ----
+        fn color_with_alpha(color: ::freyacn::__private::Color, alpha: f32) -> ::freyacn::__private::Color {
+            let r = color.r();
+            let g = color.g();
+            let b = color.b();
+            let a = (alpha * 255.0) as u8;
+            ::freyacn::__private::Color::from_argb(a, r, g, b)
+        }
+
+        fn blend_colors(base: ::freyacn::__private::Color, blend: ::freyacn::__private::Color, ratio: f32) -> ::freyacn::__private::Color {
+            let r1 = base.r() as f32;
+            let g1 = base.g() as f32;
+            let b1 = base.b() as f32;
+            let a1 = base.a() as f32 / 255.0;
+            let r2 = blend.r() as f32;
+            let g2 = blend.g() as f32;
+            let b2 = blend.b() as f32;
+            let a2 = blend.a() as f32 / 255.0;
+            let r = r1 + (r2 - r1) * ratio;
+            let g = g1 + (g2 - g1) * ratio;
+            let b = b1 + (b2 - b1) * ratio;
+            let a = a1 + (a2 - a1) * ratio;
+            ::freyacn::__private::Color::from_argb((a * 255.0) as u8, r as u8, g as u8, b as u8)
+        }
+
+        impl ::freyacn::__private::Component for #struct_name {
+            fn render(&self) -> impl::freyacn::__private::Intoelement {
+                #fn_block
+            }
+        }
+
+
+        #fn_visibility fn #fn_name(#sig.inputs) -> #struct_name {
+            let component_struct = #struct_name {
+                elements: Vec::new(),
+                key: DiffKey,
+                #(#param_names),*
+            }
         }
     }.into()
 }
@@ -106,3 +256,5 @@ fn to_pascal_case(s: &str) -> String {
         })
         .collect()
 }
+
+// todo write a god readme and lib.rs doc for the crat
