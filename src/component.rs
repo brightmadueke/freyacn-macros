@@ -290,7 +290,7 @@ pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<To
             #vis fn new() -> Self {
                 Self {
                     corner_radius: 8.0,
-                    elements: ::alloc::vec::Vec::new(),
+                    elements: Vec::new(),
                     key: ::freyacn::DiffKey::None,
                     background: ::core::option::Option::None,
                     text_color: ::core::option::Option::None,
