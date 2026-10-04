@@ -14,7 +14,7 @@ component:
   `Card!(title = "hi", name = "there")`.
 - **Tailwind-flavoured extensions** (`BackgroundExt`, `ForegroundExt`, `SpacingExt`, `SizingExt`, `BorderExt`,
   `EffectsExt`, `CornerRadiusExt`) are implemented on the generated struct, so you can style and compose components with
-  the same fluent, utility-class-style API you use on raw Freya elements — `.bg_white()`, `.bg_primary()`,
+  the same fluent, utility-class-style API you use on raw Freya IntoElements — `.bg_white()`, `.bg_primary()`,
   `.p_6()`, `.text_pink()`, `.text_sm()`, and so on.
 - **Full IDE support for the underlying struct**, so autocompletion on setters and go-to-definition still work if you
   prefer the explicit form.
@@ -34,7 +34,7 @@ fn Card() {
         .child(label(format!("count: {}", count.get())))
 }
 
-fn app() -> Element {
+fn app() -> IntoElement {
     rect()
         .child(Card!(title = "hi", count = 1))
         .child(Card!(title = "bye", name = "ada", count = 2))
@@ -78,7 +78,7 @@ use freyacn_macros::*;
 
 ## Quick start
 
-Write a function that returns a `Freya` element, decorate it with
+Write a function that returns a `Freya` IntoElement, decorate it with
 `#[component(...)]`, and list the props you want it to accept:
 
 ```rust
@@ -89,7 +89,7 @@ fn Greeting() {
     label(message.get())
 }
 
-fn app() -> Element {
+fn app() -> IntoElement {
     Greeting!(message = "hello, world")
 }
 ```
@@ -212,7 +212,7 @@ fn Button() {
 At the call site, you pass a closure (or any `EventHandler`) directly — no `Arc` wrapping required:
 
 ```rust
-fn app() -> Element {
+fn app() -> IntoElement {
     let count = use_signal(|| 0);
     Button!(
         label = "click me",
@@ -410,7 +410,7 @@ fn Row() {
 
 ## Composing components
 
-Because the companion macro returns a struct that converts into `Element`, composition is straightforward:
+Because the companion macro returns a struct that converts into `IntoElement`, composition is straightforward:
 
 ```rust
 #[component(title: String)]
@@ -450,7 +450,7 @@ fn Button() {
         .child(label.get())
 }
 
-fn app() -> Element {
+fn app() -> IntoElement {
     let count = use_signal(|| 0);
     Button!(
         label = "click me",
@@ -480,8 +480,8 @@ fn RawButton() {
 ## Styling components
 
 The generated `Component` struct implements the same tailwind-flavoured extension traits that Freya exposes on built-in
-elements. This means a component value returned by `Card!(...)` behaves like any other Freya node: you can chain layout,
-paint, and text utilities directly on it, and pass it to `.child(...)` on the parent.
+IntoElements. This means a component value returned by `Card!(...)` behaves like any other Freya node: you can chain
+layout, paint, and text utilities directly on it, and pass it to `.child(...)` on the parent.
 
 The traits implemented for every generated component struct are:
 
@@ -499,7 +499,7 @@ The traits implemented for every generated component struct are:
 
 The utility methods mirror their Tailwind CSS names as closely as Rust's `snake_case` allows — so `bg-white` becomes
 `.bg_white()`, `bg-primary` becomes `.bg_primary()`, `p-6` becomes `.p_6()`, and so on. This keeps the styling
-vocabulary identical to the one Freya already uses on raw elements; there is nothing new to memorise.
+vocabulary identical to the one Freya already uses on raw IntoElements; there is nothing new to memorise.
 
 ### Example — a tailwind-flavoured button
 
@@ -517,7 +517,7 @@ fn Button() {
         .child(label.get())
 }
 
-fn app() -> Element {
+fn app() -> IntoElement {
     rect().child(
         Button!(label = "Save")
             .bg_white()
@@ -565,7 +565,7 @@ fn TextInput() {
     )
 }
 
-fn app() -> Element {
+fn app() -> IntoElement {
     let text = use_signal(String::new);
     TextInput!(
         value = text.read().clone(),
@@ -666,7 +666,7 @@ or unwrap it before styling. Implementing `ChildrenExt`, `KeyExt`, `BackgroundEx
 `ForegroundExt`, `SpacingExt`, `SizingExt`, `BorderExt`, `EffectsExt`, and `CornerRadiusExt` on the struct means the
 call site reads exactly the same whether you are styling a raw `Rect` or a `Button!()`. It is also what makes
 tailwind-style utilities — `bg_white`, `bg_primary`, `p_6`, `text_pink`, `text_sm`, `rounded` — available directly on a
-component value, so the styling vocabulary never changes between raw elements and components.
+component value, so the styling vocabulary never changes between raw IntoElements and components.
 
 ### On `Display` and `Deref` for `PropertyRef`
 
