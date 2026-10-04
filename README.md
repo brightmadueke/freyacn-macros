@@ -1,9 +1,9 @@
-# freyacn
+# freyacn-macros
 
 Ergonomic, reactive components for [Freya](https://github.com/marc2332/freya), with a syntax that feels like JSX minus
 the angle brackets.
 
-`freyacn` gives you a single `#[component]` attribute that turns a plain Rust function into a fully-fledged UI
+`freyacn-macros` gives you a single `#[component]` attribute that turns a plain Rust function into a fully-fledged UI
 component:
 
 - **Props are declared inline** in the attribute, with types, defaults, and required markers — no separate struct to
@@ -12,11 +12,15 @@ component:
   values.
 - **A companion `macro_rules!`** gives you compact call-site syntax:
   `Card!(title = "hi", name = "there")`.
+- **Tailwind-flavoured extensions** (`BackgroundExt`, `ForegroundExt`, `SpacingExt`, `SizingExt`, `BorderExt`,
+  `EffectsExt`, `CornerRadiusExt`) are implemented on the generated struct, so you can style and compose components with
+  the same fluent, utility-class-style API you use on raw Freya elements — `.bg_white()`, `.bg_primary()`,
+  `.p_6()`, `.text_pink()`, `.text_sm()`, and so on.
 - **Full IDE support for the underlying struct**, so autocompletion on setters and go-to-definition still work if you
   prefer the explicit form.
 
 ```rust
-use freyacn::*;
+use freyacn_macros::*;
 
 #[component(
     title: String,
@@ -48,9 +52,10 @@ fn app() -> Element {
 5. [Setting props at the call site](#setting-props-at-the-call-site)
 6. [The `Property<T>` API](#the-propertyt-api)
 7. [Composing components](#composing-components)
-8. [Reactivity patterns](#reactivity-patterns)
-9. [Reference](#reference)
-10. [Design notes](#design-notes)
+8. [Styling components](#styling-components)
+9. [Reactivity patterns](#reactivity-patterns)
+10. [Reference](#reference)
+11. [Design notes](#design-notes)
 
 ---
 
@@ -58,15 +63,15 @@ fn app() -> Element {
 
 ```toml
 [dependencies]
-freyacn = "0.1"
+freyacn-macros = "0.1"
 freya = "0.1"
 ```
 
-The `freyacn` crate re-exports the `#[component]` attribute macro, the
+The `freyacn-macros` crate re-exports the `#[component]` attribute macro, the
 `Property<T>` runtime type, and everything you need from `freya::prelude`.
 
 ```rust
-use freyacn::*;
+use freyacn_macros::*;
 ```
 
 ---
@@ -77,7 +82,7 @@ Write a function that returns a `Freya` element, decorate it with
 `#[component(...)]`, and list the props you want it to accept:
 
 ```rust
-use freyacn::*;
+use freyacn_macros::*;
 
 #[component(message: String)]
 fn Greeting() {
@@ -184,6 +189,43 @@ fn Counter(step: i32) { ... }
 fn Counter() { ... }
 ```
 
+### Non-`Clone` and event-handler props
+
+Props whose type is not `Clone` — or where you want to route an event through the component — work too. A common case is
+a callback:
+
+```rust
+use freya::prelude::*;
+
+#[component(
+    label: String = "click me".into(),
+    on_click: EventHandler<Event<PressEventData>>,
+)]
+fn Button() {
+    let handler = on_click.get();
+    rect()
+        .on_press(move |e| handler.call(e))
+        .child(label.get())
+}
+```
+
+At the call site, you pass a closure (or any `EventHandler`) directly — no `Arc` wrapping required:
+
+```rust
+fn app() -> Element {
+    let count = use_signal(|| 0);
+    Button!(
+        label = "click me",
+        on_click = move |_| count.write().add_assign(1),
+    )
+}
+```
+
+`on_click` is declared with a type and no default, which makes it an **optional** prop (`Option<EventHandler<...>>`
+under the hood). Inside the body, `on_click.get()` resolves to the caller's handler if one was set, or the type's
+`Default` otherwise. If you want to guarantee the caller supplies it, write `required on_click: ...` or move it to the
+function signature.
+
 ---
 
 ## Reading props in the body
@@ -273,11 +315,13 @@ Card!(title = "hi")
 CardComponent::new().title("hi")
 ```
 
-Because `Element: From<CardComponent>`, you can pass the result directly to
-`.child(...)`:
+Because `CardComponent` implements the extension traits (see
+[Styling components](#styling-components)), you can pass the result directly to
+`.child(...)` and chain tailwind-style utilities on it:
 
 ```rust
 rect().child(Card!(title = "hi"))
+rect().child(Card!(title = "hi").bg_white().p_6().text_sm())
 ```
 
 ### The struct API
@@ -386,33 +430,116 @@ fn Page() {
 If you need to pass a prop through without reading it, use `.get()` (owned, requires `Clone`) or restructure to read
 once at the top of the body.
 
-### Passing closures as props
+### Passing events and closures as props
 
-Closures work like any other prop. Wrap them in `Arc` so they are `Clone` and
-`Send + Sync`, or use your framework's signal types.
+Handlers are plain props. In Freya, the idiomatic type is
+`EventHandler<Event<T>>` — it is `Clone`, cheap to pass around, and accepts ordinary closures at the call site, so you
+do not need to reach for `Arc<dyn Fn ...>` yourself.
+
+```rust
+use freya::prelude::*;
+
+#[component(
+    label: String = "click me".into(),
+    on_click: EventHandler<Event<PressEventData>>,
+)]
+fn Button() {
+    let handler = on_click.get();
+    rect()
+        .on_press(move |e| handler.call(e))
+        .child(label.get())
+}
+
+fn app() -> Element {
+    let count = use_signal(|| 0);
+    Button!(
+        label = "click me",
+        on_click = move |_| count.write().add_assign(1),
+    )
+}
+```
+
+If you do need a plain closure prop, wrap it in `Arc<dyn Fn(...) + Send + Sync>` so it is `Clone`:
 
 ```rust
 use std::sync::Arc;
 
 #[component(
     label: String,
-    on_click: Arc<dyn Fn() + Send + Sync>,
+    on_change: Arc<dyn Fn(String) + Send + Sync>,
+)]
+fn RawButton() {
+    let handler = on_change.get();
+    rect().on_press(move |_| handler("pressed".into()))
+        .child(label.get())
+}
+```
+
+---
+
+## Styling components
+
+The generated `Component` struct implements the same tailwind-flavoured extension traits that Freya exposes on built-in
+elements. This means a component value returned by `Card!(...)` behaves like any other Freya node: you can chain layout,
+paint, and text utilities directly on it, and pass it to `.child(...)` on the parent.
+
+The traits implemented for every generated component struct are:
+
+| Trait             | Representative methods                                                                                   |
+|-------------------|----------------------------------------------------------------------------------------------------------|
+| `ChildrenExt`     | `.child(...)`, `.children(...)`                                                                          |
+| `KeyExt`          | `.key(...)`                                                                                              |
+| `BackgroundExt`   | tailwind-style paint: `.bg_white()`, `.bg_primary()`, `.bg_black()`, plus raw `.background(...)`         |
+| `ForegroundExt`   | tailwind-style text: `.text_pink()`, `.text_sm()`, `.text_bold()`, `.text_white()`, `.text_primary()`, … |
+| `SpacingExt`      | tailwind-style spacing: `.p_6()`, `.p_2()`, `.px_4()`, `.py_3()`, `.m_6()`, `.mt_2()`, …                 |
+| `SizingExt`       | tailwind-style sizing: `.w_full()`, `.h_full()`, `.w_auto()`, plus raw `.width(...)`, `.height(...)`     |
+| `BorderExt`       | `.border(...)`, per-side borders, plus utility helpers                                                   |
+| `EffectsExt`      | `.opacity(...)`, `.blur(...)`, shadows, and other paint effects                                          |
+| `CornerRadiusExt` | `.corner_radius(...)`, `.rounded()`, `.rounded_full()`, per-corner variants                              |
+
+The utility methods mirror their Tailwind CSS names as closely as Rust's `snake_case` allows — so `bg-white` becomes
+`.bg_white()`, `bg-primary` becomes `.bg_primary()`, `p-6` becomes `.p_6()`, and so on. This keeps the styling
+vocabulary identical to the one Freya already uses on raw elements; there is nothing new to memorise.
+
+### Example — a tailwind-flavoured button
+
+```rust
+use freya::prelude::*;
+
+#[component(
+    label: String = "click me".into(),
+    on_click: EventHandler<Event<PressEventData>>,
 )]
 fn Button() {
     let handler = on_click.get();
     rect()
-        .on_press(move |_| handler())
+        .on_press(move |e| handler.call(e))
         .child(label.get())
 }
 
-fn app() -> IntoElement {
-    let count = use_signal(|| 0);
-    Button!(
-        label = "click me",
-        on_click = Arc::new(move || count.write().add_assign(1)),
+fn app() -> Element {
+    rect().child(
+        Button!(label = "Save")
+            .bg_white()
+            .p_6()
+            .rounded()
+            .text_sm()
+            .text_bold()
+            .text_pink(),
     )
 }
 ```
+
+Every styling call returns the component by value, so chains stay flat. Under the hood these methods delegate to the
+same `BackgroundExt` / `SpacingExt` / `CornerRadiusExt` / `ForegroundExt` machinery Freya uses for `Rect` and friends.
+
+### Key takeaways
+
+- Styling is **outside-in**: props describe *what the component is*, extension traits describe *how it sits in the
+  tree*.
+- The generated struct is `Clone` and cheap to duplicate, so you can style and re-use the same component value.
+- Tailwind-style helpers (`bg_white`, `p_6`, `text_pink`, `rounded`, …) are the recommended styling surface — they read
+  the same on a `Button!()` as they do on a `rect()`.
 
 ---
 
@@ -427,14 +554,14 @@ A common pattern is a controlled input:
 ```rust
 #[component(
     value: String,
-    on_change: Arc<dyn Fn(String) + Send + Sync>,
+    on_change: EventHandler<Event<FormEventData>>,
 )]
 fn TextInput() {
     let on_change = on_change.get();
     rect().child(
         Input::new()
             .value(value.get())
-            .on_change(move |s| on_change(s.clone())),
+            .on_change(move |e| on_change.call(e)),
     )
 }
 
@@ -442,7 +569,7 @@ fn app() -> Element {
     let text = use_signal(String::new);
     TextInput!(
         value = text.read().clone(),
-        on_change = Arc::new(move |s| text.set(s)),
+        on_change = move |e| text.set(e.value.clone()),
     )
 }
 ```
@@ -471,15 +598,23 @@ prop := 'required'? name ( ':' Type )? ( '=' expr )?
 
 For `fn Card(...)`:
 
-| Item                                                     | Purpose                                                                 |
-|----------------------------------------------------------|-------------------------------------------------------------------------|
-| `struct CardComponent`                                   | component value; one `Property<T>` field per prop                       |
-| `impl CardComponent { fn new() }`                        | constructor                                                             |
-| `impl CardComponent { fn prop(...) }`                    | one setter per prop                                                     |
-| `impl Default for CardComponent`                         | delegates to `new()`                                                    |
-| `impl Component for CardComponent`                       | your function body, with prop bindings                                  |
-| `impl ChildrenExt, KeyExt, and other freyacn Extensions` | enables `.child(Card!(...)) and the methods provided by the extensions` |
-| `macro_rules! Card`                                      | companion call-site sugar                                               |
+| Item                                     | Purpose                                                          |
+|------------------------------------------|------------------------------------------------------------------|
+| `struct CardComponent`                   | component value; one `Property<T>` field per prop                |
+| `impl CardComponent { fn new() }`        | constructor                                                      |
+| `impl CardComponent { fn prop(...) }`    | one setter per prop                                              |
+| `impl Default for CardComponent`         | delegates to `new()`                                             |
+| `impl Component for CardComponent`       | your function body, with prop bindings                           |
+| `impl ChildrenExt for CardComponent`     | `.child(...)`, `.children(...)` on the component value           |
+| `impl KeyExt for CardComponent`          | `.key(...)`                                                      |
+| `impl BackgroundExt for CardComponent`   | `.bg_white()`, `.bg_primary()`, `.background(...)`, …            |
+| `impl ForegroundExt for CardComponent`   | `.text_pink()`, `.text_sm()`, `.text_bold()`, `.text_white()`, … |
+| `impl SpacingExt for CardComponent`      | `.p_6()`, `.px_4()`, `.py_3()`, `.m_6()`, `.mt_2()`, …           |
+| `impl SizingExt for CardComponent`       | `.w_full()`, `.h_full()`, `.width(...)`, `.height(...)`, …       |
+| `impl BorderExt for CardComponent`       | `.border(...)`, per-side borders                                 |
+| `impl EffectsExt for CardComponent`      | `.opacity(...)`, `.blur(...)`, shadows                           |
+| `impl CornerRadiusExt for CardComponent` | `.rounded()`, `.rounded_full()`, `.corner_radius(...)`, …        |
+| `macro_rules! Card`                      | companion call-site sugar                                        |
 
 ### Crate re-exports
 
@@ -508,7 +643,8 @@ for arbitrary macro input. If IDE feedback matters more than compactness, use th
 CardComponent::new().title("hi")
 ```
 
-The struct API gets full autocompletion, hover docs, and go-to-definition.
+The struct API gets full autocompletion, hover docs, and go-to-definition — and it exposes the extension-trait methods
+just the same.
 
 ### Why panic for required props?
 
@@ -522,6 +658,15 @@ anyway.
 `Property<T>` is `Arc<RwLock<Option<T>>>`. This makes it `Clone`, `Send +
 Sync` when `T` is, and lets setters take `&self` — which in turn lets the generated struct derive `Clone` without any
 bounds on `T`. It also matches the way UI frameworks share state across a tree.
+
+### Why implement the Freya extension traits on the generated struct?
+
+Because a component is just a value that eventually lowers to an `Element`, there is no reason to force callers to wrap
+or unwrap it before styling. Implementing `ChildrenExt`, `KeyExt`, `BackgroundExt`,
+`ForegroundExt`, `SpacingExt`, `SizingExt`, `BorderExt`, `EffectsExt`, and `CornerRadiusExt` on the struct means the
+call site reads exactly the same whether you are styling a raw `Rect` or a `Button!()`. It is also what makes
+tailwind-style utilities — `bg_white`, `bg_primary`, `p_6`, `text_pink`, `text_sm`, `rounded` — available directly on a
+component value, so the styling vocabulary never changes between raw elements and components.
 
 ### On `Display` and `Deref` for `PropertyRef`
 
