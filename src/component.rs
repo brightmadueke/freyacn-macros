@@ -310,6 +310,11 @@ pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<To
                 }
             }
 
+            pub fn corner_radius(mut self, corner_radius: f32) -> Self {
+                self.corner_radius = corner_radius;
+                self
+            }
+
             #(#setters)*
         }
 
