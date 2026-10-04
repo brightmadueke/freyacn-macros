@@ -111,7 +111,7 @@ struct Prop {
 pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
     let func: ItemFn = syn::parse2(item)?;
 
-    let fn_ident = to_pascal_case(&func.sig.ident.to_string());
+    let fn_ident = format_ident!("{}", to_pascal_case(&func.sig.ident.to_string()));
     let struct_ident = format_ident!("{}Component", fn_ident);
     let vis = func.vis.clone();
 

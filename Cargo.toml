@@ -1,6 +1,6 @@
 [package]
 name = "freyacn_macros"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Bright Madueke <maduekebright399@gmail.com>"]
 description = "Helper macros for freyacn"
 edition = "2024"
