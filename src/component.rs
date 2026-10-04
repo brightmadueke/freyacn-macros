@@ -289,7 +289,8 @@ pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<To
             #[allow(dead_code)]
             #vis fn new() -> Self {
                 Self {
-                    elements: Vec::new(),
+                    corner_radius: 8.0,
+                    elements: ::alloc::vec::Vec::new(),
                     key: ::freyacn::DiffKey::None,
                     background: ::core::option::Option::None,
                     text_color: ::core::option::Option::None,
