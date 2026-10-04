@@ -32,8 +32,8 @@ fn Card() {
 
 fn app() -> Element {
     rect()
-        .child(Card!(title = "hi", count = 1).into())
-        .child(Card!(title = "bye", name = "ada", count = 2).into())
+        .child(Card!(title = "hi", count = 1))
+        .child(Card!(title = "bye", name = "ada", count = 2))
 }
 ```
 
@@ -85,7 +85,7 @@ fn Greeting() {
 }
 
 fn app() -> Element {
-    Greeting!(message = "hello, world").into()
+    Greeting!(message = "hello, world")
 }
 ```
 
@@ -98,7 +98,7 @@ Three things happened:
 If you prefer explicitness, the struct API is available too:
 
 ```rust
-GreetingComponent::new().message("hello, world").into()
+GreetingComponent::new().message("hello, world")
 ```
 
 ---
@@ -289,7 +289,6 @@ CardComponent::new()
 .title("hi")
 .name("there")
 .count(5)
-.into()
 ```
 
 ### Shared state
@@ -406,12 +405,12 @@ fn Button() {
         .child(label.get())
 }
 
-fn app() -> Element {
+fn app() -> IntoElement {
     let count = use_signal(|| 0);
     Button!(
         label = "click me",
         on_click = Arc::new(move || count.write().add_assign(1)),
-    ).into()
+    )
 }
 ```
 
@@ -444,7 +443,7 @@ fn app() -> Element {
     TextInput!(
         value = text.read().clone(),
         on_change = Arc::new(move |s| text.set(s)),
-    ).into()
+    )
 }
 ```
 
@@ -506,7 +505,7 @@ companion `macro_rules!` restores the syntax at the cost of IDE inlay hints — 
 for arbitrary macro input. If IDE feedback matters more than compactness, use the struct API instead:
 
 ```rust
-CardComponent::new().title("hi").into()
+CardComponent::new().title("hi")
 ```
 
 The struct API gets full autocompletion, hover docs, and go-to-definition.
