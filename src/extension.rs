@@ -6,6 +6,30 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Error, Fields, Ident, ItemStruct, Token, punctuated::Punctuated};
 
 // ---------------------------------------------------------------------------
+// Supported extensions
+// ---------------------------------------------------------------------------
+
+/// Every extension name freyacn ships. Used for error messages.
+const SUPPORTED: &[&str] = &[
+    "children",
+    "key",
+    "style",
+    "event_handlers",
+    "corner_radius",
+];
+
+/// Extensions that require another extension to also be listed.
+///
+/// `corner_radius` delegates to `StyleExt::corner_radius`, so the
+/// `StyleExt` impl must exist for the delegation to compile.
+fn dependencies_of(name: &str) -> &'static [&'static str] {
+    match name {
+        "corner_radius" => &["style"],
+        _ => &[],
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Attribute argument parsing
 // ---------------------------------------------------------------------------
 
@@ -36,6 +60,8 @@ pub fn field_names_for(name: &str) -> &'static [&'static str] {
         "key" => &["key"],
         "style" => &["style"],
         "event_handlers" => &["event_handlers"],
+        // `corner_radius` adds no field of its own — it reuses `style`.
+        "corner_radius" => &[],
         _ => &[],
     }
 }
@@ -60,6 +86,9 @@ struct Extension {
 
 fn extension_for(name: &str, struct_name: &Ident) -> syn::Result<Extension> {
     let ext = match name {
+        // -------------------------------------------------------------------
+        // children  →  freyacn::ChildrenExt
+        // -------------------------------------------------------------------
         "children" => Extension {
             fields: vec![quote! {
                 /// Child elements attached to this component.
@@ -83,6 +112,9 @@ fn extension_for(name: &str, struct_name: &Ident) -> syn::Result<Extension> {
             }],
         },
 
+        // -------------------------------------------------------------------
+        // key  →  freyacn::KeyExt
+        // -------------------------------------------------------------------
         "key" => Extension {
             fields: vec![quote! {
                 /// The element's diff key.
@@ -106,6 +138,9 @@ fn extension_for(name: &str, struct_name: &Ident) -> syn::Result<Extension> {
             }],
         },
 
+        // -------------------------------------------------------------------
+        // style  →  freyacn::StyleExt
+        // -------------------------------------------------------------------
         "style" => Extension {
             fields: vec![quote! {
                 /// Accumulated styling state.
@@ -129,6 +164,9 @@ fn extension_for(name: &str, struct_name: &Ident) -> syn::Result<Extension> {
             }],
         },
 
+        // -------------------------------------------------------------------
+        // event_handlers  →  freyacn::EventHandlersExt
+        // -------------------------------------------------------------------
         "event_handlers" => Extension {
             fields: vec![quote! {
                 /// Event-handler registry.
@@ -140,7 +178,8 @@ fn extension_for(name: &str, struct_name: &Ident) -> syn::Result<Extension> {
                     ::freyacn::FxHashMap<::freyacn::EventName, ::freyacn::EventHandlerType>
             }],
             inits: vec![quote! {
-                event_handlers: <::freyacn::FxHashMap<_, _> as ::core::default::Default>::default()
+                event_handlers:
+                    <::freyacn::FxHashMap<_, _> as ::core::default::Default>::default()
             }],
             locals: vec![quote! {
                 let event_handlers: &::freyacn::FxHashMap<
@@ -162,14 +201,40 @@ fn extension_for(name: &str, struct_name: &Ident) -> syn::Result<Extension> {
             }],
         },
 
+        // -------------------------------------------------------------------
+        // corner_radius  →  freyacn::CornerRadiusExt
+        // -------------------------------------------------------------------
+        //
+        // Depends on `style`: the impl delegates to `StyleExt::corner_radius`.
+        // Contributes no field, no init, and no render binding — it only adds
+        // a trait impl that forwards to the styling helpers already provided
+        // by `StyleExt`.
+        "corner_radius" => Extension {
+            fields: vec![],
+            inits: vec![],
+            locals: vec![],
+            impls: vec![quote! {
+                impl ::freyacn::CornerRadiusExt for #struct_name {
+                    fn with_corner_radius(self, corner_radius: f32) -> Self {
+                        ::freyacn::StyleExt::corner_radius(self, corner_radius)
+                    }
+                }
+            }],
+        },
+
+        // -------------------------------------------------------------------
+        // Unknown
+        // -------------------------------------------------------------------
         other => {
+            let valid = SUPPORTED
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(Error::new(
                 Span::call_site(),
-                format!(
-                    "Unsupported extension `{other}`. \
-                     Valid names: `children`, `key`, `style`, `event_handlers`."
-                ),
-            ))
+                format!("Unsupported extension `{other}`. Valid names: {valid}."),
+            ));
         }
     };
     Ok(ext)
@@ -195,6 +260,23 @@ pub fn collect(struct_name: &Ident, names: &[String]) -> syn::Result<ExtensionsC
     };
 
     for name in names {
+        // -- Dependency check ------------------------------------------------
+        //
+        // Fail at the attribute site with a targeted message rather than at
+        // the generated impl site with a trait-bound error.
+        for dep in dependencies_of(name) {
+            if !names.iter().any(|n| n == dep) {
+                return Err(Error::new(
+                    Span::call_site(),
+                    format!(
+                        "`{name}` requires `{dep}` to also be listed in \
+                         `#[extensions(...)]`. Add it, e.g. \
+                         `#[extensions({dep}, {name})]`.",
+                    ),
+                ));
+            }
+        }
+
         let ext = extension_for(name, struct_name)?;
         out.field_defs.extend(ext.fields);
         out.field_inits.extend(ext.inits);
@@ -232,10 +314,13 @@ pub fn parse_extensions(attr: TokenStream2, item: TokenStream2) -> syn::Result<T
     let generics = &item_struct.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-    let ext_list = names.iter().map(|n| format!("* `{n}`")).collect::<Vec<_>>().join("\n");
-    let generated_note = format!(
-        "## Extensions\n\nThis struct has been extended with:\n\n{ext_list}"
-    );
+    let ext_list = names
+        .iter()
+        .map(|n| format!("* `{n}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let generated_note =
+        format!("## Extensions\n\nThis struct has been extended with:\n\n{ext_list}");
 
     Ok(quote! {
         #(#attrs)*
