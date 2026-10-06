@@ -1,61 +1,18 @@
-# freyacn-macros
+# `freyacn-macros`
 
-Ergonomic, reactive components for [Freya](https://github.com/marc2332/freya), with a syntax that feels like JSX minus
-the angle brackets.
+Procedural macros for the [`freyacn`][freyacn] crate. They turn plain functions into styled, prop‑driven components
+for [Freya][freya], with Tailwind‑inspired styling built in and complete generated documentation.
 
-`freyacn-macros` gives you a single `#[component]` attribute that turns a plain Rust function into a fully-fledged UI
-component:
+The crate exposes three attributes:
 
-- **Props are declared inline** in the attribute, with types, defaults, and required markers — no separate struct to
-  write.
-- **Every prop is a `Property<T>`** at render time, giving you a uniform API for reading, mutating, and observing
-  values.
-- **A companion `macro_rules!`** gives you compact call-site syntax:
-  `Card!(title = "hi", name = "there")`.
-- **Tailwind-flavoured extensions** (`BackgroundExt`, `ForegroundExt`, `SpacingExt`, `SizingExt`, `BorderExt`,
-  `EffectsExt`, `CornerRadiusExt`) are implemented on the generated struct, so you can style and compose components with
-  the same fluent, utility-class-style API you use on raw Freya IntoElements — `.bg_white()`, `.bg_primary()`,
-  `.p_6()`, `.text_pink()`, `.text_sm()`, and so on.
-- **Full IDE support for the underlying struct**, so autocompletion on setters and go-to-definition still work if you
-  prefer the explicit form.
+* **`#[component]`** — turns a function into a component struct plus a PascalCase constructor function and a companion
+  macro.
+* **`#[extensions(...)]`** — opts the generated struct into one or more of freyacn's built‑in extension bundles
+  (`children`, `key`, `style`, `event_handlers`).
+* **`#[struct_fields(...)]`** — adds internal storage fields to the generated struct, without exposing them as props.
+  Use this to store data your own custom trait impls need.
 
-```rust
-use freyacn_macros::*;
-
-#[component(
-    title: String,
-    name: String = "anonymous".into(),
-    required count: i32,
-)]
-fn Card() {
-    rect()
-        .child(label(title.get()))
-        .child(label(format!("hello, {}", name.get())))
-        .child(label(format!("count: {}", count.get())))
-}
-
-fn app() -> IntoElement {
-    rect()
-        .child(Card!(title = "hi", count = 1))
-        .child(Card!(title = "bye", name = "ada", count = 2))
-}
-```
-
----
-
-## Table of contents
-
-1. [Installation](#installation)
-2. [Quick start](#quick-start)
-3. [Declaring props](#declaring-props)
-4. [Reading props in the body](#reading-props-in-the-body)
-5. [Setting props at the call site](#setting-props-at-the-call-site)
-6. [The `Property<T>` API](#the-propertyt-api)
-7. [Composing components](#composing-components)
-8. [Styling components](#styling-components)
-9. [Reactivity patterns](#reactivity-patterns)
-10. [Reference](#reference)
-11. [Design notes](#design-notes)
+All three work together; `#[component]` is the recommended entry point because it knows how to initialise every field.
 
 ---
 
@@ -63,619 +20,636 @@ fn app() -> IntoElement {
 
 ```toml
 [dependencies]
-freyacn-macros = "0.1"
-freya = "0.1"
-```
-
-The `freyacn-macros` crate re-exports the `#[component]` attribute macro, the
-`Property<T>` runtime type, and everything you need from `freya::prelude`.
-
-```rust
-use freyacn_macros::*;
-```
-
----
-
-## Quick start
-
-Write a function that returns a `Freya` IntoElement, decorate it with
-`#[component(...)]`, and list the props you want it to accept:
-
-```rust
-use freyacn_macros::*;
-
-#[component(message: String)]
-fn Greeting() {
-    label(message.get())
-}
-
-fn app() -> IntoElement {
-    Greeting!(message = "hello, world")
-}
-```
-
-Three things happened:
-
-1. The macro generated a `GreetingComponent` struct with one field per prop.
-2. Each prop is stored as a `Property<String>`, which gives you the uniform read/mutate API described below.
-3. A `macro_rules! Greeting` was generated next to the function, so the call site is compact.
-
-If you prefer explicitness, the struct API is available too:
-
-```rust
-GreetingComponent::new().message("hello, world")
-```
-
----
-
-## Declaring props
-
-Props are listed inside the `#[component(...)]` attribute, comma-separated. Each entry is one of three forms:
-
-### Optional with default value
-
-```
-name: Type = expr
-```
-
-The caller may omit the prop. Inside the body, `.get()` returns the fallback if the caller did not set it.
-
-```rust
-#[component(
-    title: String = "Untitled".into(),
-    font_size: f32 = 16.0,
-)]
-fn Heading() {
-    label(title.get()).font_size(font_size.get())
-}
-```
-
-### Optional with `Type::default()`
-
-```
-name: Type
-```
-
-Same as above, but the fallback is `<Type as Default>::default()`. Use this when the type has a sensible zero value
-(`String`, `bool`, numbers, `Vec`,
-`Option`, …).
-
-```rust
-#[component(count: i32, subtitle: String)]
-fn Badge() {
-    // count.get() -> 0 if unset, subtitle.get() -> "" if unset
-    label(format!("{} — {}", count.get(), subtitle.get()))
-}
-```
-
-### Required
-
-```
-required name: Type
-```
-
-No fallback. If the caller never sets it, the first read panics with a clear message naming the prop:
-
-```
-required prop `count` was not set
+freyacn = "0.1"
+freya = "0.4"
 ```
 
 ```rust
-#[component(required id: u32, label: String)]
-fn Item() {
-    // id.get() panics if the caller omitted `id`
-    // label.get() returns "" if the caller omitted `label`
-}
-```
-
-### Function parameters become required props
-
-Any parameter on the function itself is also treated as a required prop. This is often the most readable way to declare
-required inputs, since the signature documents them and rust-analyzer shows them in autocomplete:
-
-```rust
-#[component(count: i32 = 0)]
-fn Counter(step: i32) {
-    // `step` is required, `count` is optional with default 0
-}
-```
-
-The two forms are equivalent:
-
-```rust
-fn Counter(step: i32) { ... }
-// same as
-#[component(required step: i32)]
-fn Counter() { ... }
-```
-
-### Non-`Clone` and event-handler props
-
-Props whose type is not `Clone` — or where you want to route an event through the component — work too. A common case is
-a callback:
-
-```rust
+use freyacn::{StyleExt, component, extensions, struct_fields};
 use freya::prelude::*;
-
-#[component(
-    label: String = "click me".into(),
-    on_click: EventHandler<Event<PressEventData>>,
-)]
-fn Button() {
-    let handler = on_click.get();
-    rect()
-        .on_press(move |e| handler.call(e))
-        .child(label.get())
-}
 ```
-
-At the call site, you pass a closure (or any `EventHandler`) directly — no `Arc` wrapping required:
-
-```rust
-fn app() -> IntoElement {
-    let count = use_signal(|| 0);
-    Button!(
-        label = "click me",
-        on_click = move |_| count.write().add_assign(1),
-    )
-}
-```
-
-`on_click` is declared with a type and no default, which makes it an **optional** prop (`Option<EventHandler<...>>`
-under the hood). Inside the body, `on_click.get()` resolves to the caller's handler if one was set, or the type's
-`Default` otherwise. If you want to guarantee the caller supplies it, write `required on_click: ...` or move it to the
-function signature.
 
 ---
 
-## Reading props in the body
+## `#[component]`
 
-Inside the function body, every prop is bound to `&Property<T>`. There is no difference between optional, required, and
-defaulted props at this point — they all give you the same methods.
+Every component is written as a normal Rust function. The macro inspects the function's signature and the attribute
+argument to decide each prop's kind.
 
-```rust
-#[component(
-    title: String,
-    required id: u32,
-    count: i32 = 0,
-)]
-fn Row() {
-    // ---- owned read (requires T: Clone) ----
-    let title_owned: String = title.get();
+### Three kinds of props
 
-    // ---- zero-copy read ----
-    let title_len: usize = title.get_ref().len();
+| Where you write it                               | Kind          | Field type       | Initial value       | Body sees                   | Setter accepts              |
+|--------------------------------------------------|---------------|------------------|---------------------|-----------------------------|-----------------------------|
+| `fn Card(name: String)`                          | **required**  | `Option<String>` | `None`              | `&String` (panics if unset) | `impl Into<String>`         |
+| `#[component(name: String)]`                     | **optional**  | `Option<String>` | `None`              | `&Option<String>`           | `impl Into<Option<String>>` |
+| `#[component(name: String = "ada".to_string())]` | **defaulted** | `String`         | `"ada".to_string()` | `&String`                   | `impl Into<String>`         |
 
-    // ---- closure read, no clone ----
-    let upper = title.with(|t| t.to_uppercase());
+You **never** write `Option<T>` yourself for an optional prop — declaring
+`name: String` in the attribute is enough; the macro wraps it in `Option`.
 
-    // ---- check whether the caller set it ----
-    if title.is_set() {
-        // caller provided `title`
-    }
-
-    // ---- read into an Option ----
-    match title.as_option() {
-        Some(t) => label(t),
-        None => label("(no title)"),
-    }
-
-    // ...
-}
-```
-
-### Choosing between `get`, `get_ref`, and `with`
-
-| Method      | Cost                                        | When to use                                  |
-|-------------|---------------------------------------------|----------------------------------------------|
-| `get()`     | one clone                                   | you need an owned value                      |
-| `get_ref()` | zero-copy, holds a read lock                | you only need to read for a short scope      |
-| `with(f)`   | zero-copy, lock released inside the closure | you want to compute something from the value |
-
-`get_ref()` returns a guard that derefs to `&T`. The read lock is held for the guard's lifetime, so keep it short:
-
-```rust
-let len = title.get_ref().len();    // guard dropped at `;`
-```
-
-`with` is often the cleanest:
-
-```rust
-let first_word = title.with( | t| t.split_whitespace().next().map(str::to_owned));
-```
-
-### Required props and panics
-
-Reading a required prop that was never set panics. This is the same trade-off
-`dioxus` and `rubber_duck` make — the panic happens at render time, not at construction, so a runtime test is the only
-way to catch it. If you want compile-time enforcement, keep the required inputs as function parameters and let
-rust-analyzer nudge callers.
-
----
-
-## Setting props at the call site
-
-### The companion macro
-
-Each `#[component]` also generates a `macro_rules!` with the same name as the function. It builds the component by
-chaining setters:
-
-```rust
-Card!()
-Card!(title = "hi")
-Card!(title = "hi", name = "there")
-Card!(title = "hi", name = "there", count = 5)
-```
-
-Order does not matter, and any subset of optional props is valid. The macro expands to a struct expression:
-
-```rust
-Card!(title = "hi")
-// expands to
-CardComponent::new().title("hi")
-```
-
-Because `CardComponent` implements the extension traits (see
-[Styling components](#styling-components)), you can pass the result directly to
-`.child(...)` and chain tailwind-style utilities on it:
-
-```rust
-rect().child(Card!(title = "hi"))
-rect().child(Card!(title = "hi").bg_white().p_6().text_sm())
-```
-
-### The struct API
-
-The generated struct is public and its setters take `impl Into<T>`, so you can skip the macro entirely:
-
-```rust
-CardComponent::new()
-.title("hi")
-.name("there")
-.count(5)
-```
-
-### Shared state
-
-Setters mutate the underlying `Property` in place via interior mutability, so
-`CardComponent` is `Clone` and cloning shares the prop storage:
-
-```rust
-let a = CardComponent::new().title("hi");
-let b = a.clone();
-b.title("changed");
-assert_eq!(a.title.get(), "changed");
-```
-
-This makes the struct behave like a signal — a `Property<T>` is essentially a typed, scoped `RwLock`.
-
----
-
-## The `Property<T>` API
-
-Every prop is stored as `Property<T>`, which you receive as `&Property<T>`
-inside the render body. The full surface:
-
-### Reading
-
-| Method        | Bound      | Returns                                   |
-|---------------|------------|-------------------------------------------|
-| `get()`       | `T: Clone` | owned `T`, resolving the fallback         |
-| `get_ref()`   | —          | `PropertyRef<'_, T>`, derefs to `&T`      |
-| `with(f)`     | —          | whatever `f(&T)` returns                  |
-| `as_option()` | `T: Clone` | `Option<T>`, `Some` only if caller set it |
-| `is_set()`    | —          | `bool`                                    |
-| `is_none()`   | —          | `bool`                                    |
-
-### Writing
-
-| Method          | Effect                                                 |
-|-----------------|--------------------------------------------------------|
-| `set(v)`        | replace value, mark as set. Takes `&self`.             |
-| `clear()`       | reset to fallback (or panic on next read if required)  |
-| `into_option()` | consume the `Property`, take the caller's value if any |
-
-### Trait impls
-
-| Trait                            | Notes                                                  |
-|----------------------------------|--------------------------------------------------------|
-| `Clone`                          | `Arc` bump — no `T: Clone` bound                       |
-| `Debug`                          | prints current value and fallback, requires `T: Debug` |
-| `PropertyRef: Deref<Target = T>` | enables `&*prop` and method calls                      |
-| `PropertyRef: Display`           | forwards to `T: Display`                               |
+A name appearing both as a function parameter and in the attribute is a compile error.
 
 ### Example
 
 ```rust
-#[component(required id: u32, label: String, count: i32 = 0)]
-fn Row() {
-    // read
-    let l = label.get();
-    let n = count.get_ref().to_string();
-
-    // mutate — visible to every clone of `RowComponent`
-    count.set(count.get() + 1);
-
-    // reset — falls back to 0
-    count.clear();
-
-    // check
-    let was_set = label.is_set();
-
-    label(format!("{id} — {l} — {n}"))
-}
-```
-
----
-
-## Composing components
-
-Because the companion macro returns a struct that converts into `IntoElement`, composition is straightforward:
-
-```rust
-#[component(title: String)]
-fn Header() {
-    rect().child(label(title.get())).height(Size::px(48.0))
-}
-
-#[component(required id: u32, title: String)]
-fn Page() {
-    rect()
-        .child(Header!(title = title.get()))
-        .child(Header!(title = "sidebar"))
-        .child(main_content(id.get()))
-}
-```
-
-If you need to pass a prop through without reading it, use `.get()` (owned, requires `Clone`) or restructure to read
-once at the top of the body.
-
-### Passing events and closures as props
-
-Handlers are plain props. In Freya, the idiomatic type is
-`EventHandler<Event<T>>` — it is `Clone`, cheap to pass around, and accepts ordinary closures at the call site, so you
-do not need to reach for `Arc<dyn Fn ...>` yourself.
-
-```rust
+use freyacn::{component, StyleExt};
 use freya::prelude::*;
 
-#[component(
-    label: String = "click me".into(),
-    on_click: EventHandler<Event<PressEventData>>,
-)]
-fn Button() {
-    let handler = on_click.get();
-    rect()
-        .on_press(move |e| handler.call(e))
-        .child(label.get())
+// Required — from the function signature.
+#[component]
+fn Greeting(name: String) {
+    // `name: &String`, panics at render if never set.
+    label().text(format!("Hello, {name}!")).into()
 }
 
-fn app() -> IntoElement {
-    let count = use_signal(|| 0);
-    Button!(
-        label = "click me",
-        on_click = move |_| count.write().add_assign(1),
-    )
+// Optional — attribute entry, no default.
+#[component(subtitle: String)]
+fn Heading(subtitle: String) {
+    // `subtitle: &Option<String>`
+    match subtitle {
+        Some(s) => label().text(s.as_str()).into(),
+        None => rect().into(),
+    }
+}
+
+// Defaulted — attribute entry with `= expr`.
+#[component(size: f32 = 16.0, weight: String = "normal".to_string())]
+fn Text(size: f32, weight: String) {
+    label().text(format!("{}pt {}", size, weight)).into()
 }
 ```
 
-If you do need a plain closure prop, wrap it in `Arc<dyn Fn(...) + Send + Sync>` so it is `Clone`:
+### Construction
+
+Four equivalent ways to build a component:
 
 ```rust
-use std::sync::Arc;
+let a = Greeting().name("Ada");               // fn constructor
+let b = GreetingComponent::new().name("Ada"); // struct ctor
+let c = Greeting!(name = "Ada");              // macro
+let d = GreetingComponent {                   // struct literal
+name: Some("Ada".to_string()),
+};
+```
 
-#[component(
-    label: String,
-    on_change: Arc<dyn Fn(String) + Send + Sync>,
-)]
-fn RawButton() {
-    let handler = on_change.get();
-    rect().on_press(move |_| handler("pressed".into()))
-        .child(label.get())
-}
+### Blanket `From`/`Into` for optional props
+
+Optional setters take `impl Into<Option<T>>`. Because std provides:
+
+```rust
+impl<T> From<T> for Option<T> { /* Some */ }
+impl<T> From<T> for T { /* identity */ }
+```
+
+all of these compile:
+
+```rust
+h.subtitle("hi");                       // &str → Some("hi".into())
+h.subtitle(String::from("hi"));         // String → Some
+h.subtitle(Some("hi".to_string()));     // Option<String>
+h.subtitle(None);                       // Option<String>
+```
+
+For required and defaulted props the setter takes `impl Into<T>`, so passing
+`None` is a type error — which is exactly the point:
+
+```rust
+g.name("Ada");                          // OK
+// g.name(None);                        // ← does not compile
+// g.name(Some("Ada".to_string()));     // ← does not compile
 ```
 
 ---
 
-## Styling components
+## `#[struct_fields(...)]`
 
-The generated `Component` struct implements the same tailwind-flavoured extension traits that Freya exposes on built-in
-IntoElements. This means a component value returned by `Card!(...)` behaves like any other Freya node: you can chain
-layout, paint, and text utilities directly on it, and pass it to `.child(...)` on the parent.
+Adds internal storage fields to the generated struct. These fields are **not props**:
 
-The traits implemented for every generated component struct are:
+* No setter is generated.
+* They are documented under a separate "Struct fields" section in the generated docs.
+* They're bound as locals in the render body, exactly like props.
 
-| Trait             | Representative methods                                                                                   |
-|-------------------|----------------------------------------------------------------------------------------------------------|
-| `ChildrenExt`     | `.child(...)`, `.children(...)`                                                                          |
-| `KeyExt`          | `.key(...)`                                                                                              |
-| `BackgroundExt`   | tailwind-style paint: `.bg_white()`, `.bg_primary()`, `.bg_black()`, plus raw `.background(...)`         |
-| `ForegroundExt`   | tailwind-style text: `.text_pink()`, `.text_sm()`, `.text_bold()`, `.text_white()`, `.text_primary()`, … |
-| `SpacingExt`      | tailwind-style spacing: `.p_6()`, `.p_2()`, `.px_4()`, `.py_3()`, `.m_6()`, `.mt_2()`, …                 |
-| `SizingExt`       | tailwind-style sizing: `.w_full()`, `.h_full()`, `.w_auto()`, plus raw `.width(...)`, `.height(...)`     |
-| `BorderExt`       | `.border(...)`, per-side borders, plus utility helpers                                                   |
-| `EffectsExt`      | `.opacity(...)`, `.blur(...)`, shadows, and other paint effects                                          |
-| `CornerRadiusExt` | `.corner_radius(...)`, `.rounded()`, `.rounded_full()`, per-corner variants                              |
+The point of `#[struct_fields(...)]` is to give your own custom trait impls somewhere to store data on the component —
+without inventing a wrapper, a `RefCell<HashMap>`, or a proc‑macro registry.
 
-The utility methods mirror their Tailwind CSS names as closely as Rust's `snake_case` allows — so `bg-white` becomes
-`.bg_white()`, `bg-primary` becomes `.bg_primary()`, `p-6` becomes `.p_6()`, and so on. This keeps the styling
-vocabulary identical to the one Freya already uses on raw IntoElements; there is nothing new to memorise.
+### Grammar
 
-### Example — a tailwind-flavoured button
+Same as `#[component(...)]`:
+
+```text
+field := ident ":" type [ "=" expr ]
+list  := field { "," field } [ "," ]
+```
+
+* Without `= expr` → field type becomes `Option<T>`, initialised to `None`.
+* With `= expr`     → field type stays `T`, initialised with `expr`.
+
+### Example
 
 ```rust
+use freyacn::{component, extensions, struct_fields, StyleExt};
 use freya::prelude::*;
 
-#[component(
-    label: String = "click me".into(),
-    on_click: EventHandler<Event<PressEventData>>,
+#[component(subtitle: String, badge: String = "new".to_string())]
+#[struct_fields(
+    tooltip: MyTooltip,             // Option<MyTooltip> = None
+    hover_count: usize = 0,         // usize = 0
 )]
-fn Button() {
-    let handler = on_click.get();
-    rect()
-        .on_press(move |e| handler.call(e))
-        .child(label.get())
-}
+#[extensions(children, key, style)]
+fn Card(name: String) {
+    // name:         &String              (required — fn param)
+    // subtitle:     &Option<String>      (optional — attribute)
+    // badge:        &String              (defaulted — attribute)
+    // tooltip:      &Option<MyTooltip>   (struct field)
+    // hover_count:  &usize               (struct field)
+    // children:     &Vec<Element>        (extension)
+    // key:          &DiffKey             (extension)
+    // style:        &Style               (extension)
 
-fn app() -> IntoElement {
-    rect().child(
-        Button!(label = "Save")
-            .bg_white()
-            .p_6()
-            .rounded()
-            .text_sm()
-            .text_bold()
-            .text_pink(),
-    )
+    let tip_text = tooltip.as_ref().map(|t| t.text.as_str()).unwrap_or("");
+
+    rect()
+        .background(style.background)
+        .padding(style.padding)
+        .child(label().text(format!("{name} — {badge} (hovered {hover_count}×)")))
+        .child(label().text(tip_text))
+        .children(children.clone())
+        .into()
 }
 ```
 
-Every styling call returns the component by value, so chains stay flat. Under the hood these methods delegate to the
-same `BackgroundExt` / `SpacingExt` / `CornerRadiusExt` / `ForegroundExt` machinery Freya uses for `Rect` and friends.
-
-### Key takeaways
-
-- Styling is **outside-in**: props describe *what the component is*, extension traits describe *how it sits in the
-  tree*.
-- The generated struct is `Clone` and cheap to duplicate, so you can style and re-use the same component value.
-- Tailwind-style helpers (`bg_white`, `p_6`, `text_pink`, `rounded`, …) are the recommended styling surface — they read
-  the same on a `Button!()` as they do on a `rect()`.
-
----
-
-## Reactivity patterns
-
-`Property<T>` is not a Freya signal — it is a typed, shared slot used to carry props into the component. Reactive state
-lives in your usual
-`use_signal` / `use_state` hooks, and `Property<T>` is how you ferry values across component boundaries.
-
-A common pattern is a controlled input:
+The user's own trait impl reads and writes the field directly, in plain Rust:
 
 ```rust
-#[component(
-    value: String,
-    on_change: EventHandler<Event<FormEventData>>,
-)]
-fn TextInput() {
-    let on_change = on_change.get();
-    rect().child(
-        Input::new()
-            .value(value.get())
-            .on_change(move |e| on_change.call(e)),
-    )
+#[derive(Default)]
+pub struct MyTooltip {
+    pub text: String,
+    pub visible: bool,
 }
 
-fn app() -> IntoElement {
-    let text = use_signal(String::new);
-    TextInput!(
-        value = text.read().clone(),
-        on_change = move |e| text.set(e.value.clone()),
-    )
+pub trait TooltipExt {
+    fn set_tooltip(&mut self, text: impl Into<String>);
+}
+
+impl TooltipExt for CardComponent {
+    fn set_tooltip(&mut self, text: impl Into<String>) {
+        let tip = self.tooltip.get_or_insert_with(MyTooltip::default);
+        tip.text = text.into();
+    }
 }
 ```
 
-If you need mutable state local to the component, use a Freya hook rather than `Property::set` — props are inputs, not
-state.
+Call site:
+
+```rust
+let mut card = Card()
+.name("Account")
+.subtitle("Personal info")   // auto-wrapped in Some
+.badge("verified")
+.bg_white()
+.p_6();
+
+card.set_tooltip("Click to edit");
+card.hover_count = 7;            // struct fields are public
+```
+
+### Why not just use a prop?
+
+You could declare `tooltip: MyTooltip = MyTooltip::default()` inside `#[component(...)]`. The differences:
+
+|                  | Prop                | Struct field            |
+|------------------|---------------------|-------------------------|
+| Setter generated | Yes                 | No                      |
+| Documented as    | Public API          | Internal detail         |
+| Declared with    | `#[component(...)]` | `#[struct_fields(...)]` |
+
+The two attributes make the *intent* explicit. A reader of `#[component(name: String)]` knows `name` is part of the
+component's public API. A reader of `#[struct_fields(tooltip: MyTooltip)]` knows it's implementation detail managed by
+an extension impl.
 
 ---
 
-## Reference
+## `#[extensions(...)]`
 
-### Attribute grammar
+Opt the generated struct into one or more of freyacn's built‑in extension bundles.
+
+| Name             | Trait                    | Field(s) added                                           | Trait method         |
+|------------------|--------------------------|----------------------------------------------------------|----------------------|
+| `children`       | `freyacn::ChildrenExt`   | `children: Vec<Element>`                                 | `get_children`       |
+| `key`            | `freyacn::KeyExt`        | `key: DiffKey`                                           | `write_key`          |
+| `style`          | `freyacn::StyleExt`      | `style: Style`                                           | `get_style`          |
+| `event_handlers` | `freyacn::EventHandlers` | `event_handlers: FxHashMap<EventName, EventHandlerType>` | `get_event_handlers` |
+
+Extension fields are appended **after** all props and struct fields. **Any** prop or struct field that shares a name
+with an extension field is a compile error.
+
+### Example
+
+```rust
+use freyacn::{component, extensions, StyleExt};
+use freya::prelude::*;
+
+#[component(title: String, badge: String = "new".to_string())]
+#[extensions(children, key, style)]
+fn Card(name: String) {
+    // name:     &String              (required — fn param)
+    // title:    &Option<String>      (optional — attribute)
+    // badge:    &String              (defaulted — attribute)
+    // children: &Vec<Element>        (extension)
+    // key:      &DiffKey             (extension)
+    // style:    &Style               (extension)
+    rect()
+        .background(style.background)
+        .padding(style.padding)
+        .child(label().text(format!("{name} — {badge}")))
+        .children(children.clone())
+        .into()
+}
+```
+
+Every helper the `StyleExt` trait provides becomes available on the generated struct:
+
+```rust
+let card = Card()
+.name("Profile")
+.title("Personal info")          // auto-wrapped in Some
+.badge("updated")
+.bg_card()
+.text_card_foreground()
+.p_6()
+.gap_4()
+.corner_radius(12.0)
+.shadow_md()
+.class("font-semibold");         // class-string API
+```
+
+---
+
+## Forwarding user attributes
+
+Every attribute you place on the function other than `#[doc]`, `#[extensions(...)]`, and `#[struct_fields(...)]` is
+forwarded **verbatim** to the generated struct. This means you decide what derives and marker attributes the struct
+carries — the macro never bakes any in.
+
+```rust
+#[component(label: String)]
+#[struct_fields(cache: Vec<String> = Vec::new())]
+#[derive(Clone, Debug, PartialEq, Hash)]
+#[cfg(feature = "experimental")]
+#[my_custom_attribute(arg = 42)]
+fn Widget(label: String) { /* … */ }
+```
+
+The generated struct carries the same `#[derive(...)]`, `#[cfg(...)]`, and custom attribute, in the same order they
+appeared above the function. Doc comments on the function become the struct's docs; a generated summary (listing props,
+struct fields, and extensions) is appended after them.
+
+Three attributes are **not** forwarded, because they are handled by the macro itself:
+
+* `#[doc]` — re‑emitted first, so it isn't duplicated.
+* `#[extensions(...)]` — consumed and turned into fields and trait impls.
+* `#[struct_fields(...)]` — consumed and turned into storage fields.
+
+If you want `Clone` or `PartialEq` on the struct, add `#[derive(Clone, PartialEq)]` yourself. The macro won't guess, and
+downstream extensions that need those bounds will produce a normal "trait bound not satisfied" error pointing at the
+generated impl — which is where the user can fix it by adding the derive.
+
+---
+
+## Attribute ordering
+
+`#[component]` consumes `#[extensions(...)]` and `#[struct_fields(...)]`, so both must appear **below** `#[component]`:
+
+```rust
+#[component(name: String)]        // ✓ correct
+#[struct_fields(tooltip: MyTooltip)]
+#[extensions(children, style)]
+fn Card(name: String) { /* … */ }
+```
+
+If you place them above, a stub attribute fires with a friendly error explaining the correct order:
+
+```rust
+#[struct_fields(tooltip: MyTooltip)]   // ✗ wrong
+#[component(name: String)]
+fn Card(name: String) { /* … */ }
+```
 
 ```
-#[component( prop (, prop)* ,? )]
+error: `#[struct_fields(...)]` must be placed **below** `#[component(...)]`:
 
-prop := 'required'? name ( ':' Type )? ( '=' expr )?
+       #[component(name: String)]
+       #[struct_fields(tooltip: MyTooltip)]
+       fn Card(name: String) { … }
+
+       Attributes are processed top-to-bottom; `#[component]` consumes
+       `#[struct_fields]` and turns it into one or more struct fields. If
+       you place `#[struct_fields]` first, the compiler reaches it before
+       `#[component]` has had a chance to run.
 ```
 
-- `name` is an identifier.
-- `Type` defaults to the type of the same-named function parameter, if any.
-- `expr` is any Rust expression.
-- A parameter on the function that is not named in the attribute list is treated as `required name: <param type>`.
+---
 
-### Generated items
+## Generated code
 
-For `fn Card(...)`:
+For:
 
-| Item                                     | Purpose                                                          |
-|------------------------------------------|------------------------------------------------------------------|
-| `struct CardComponent`                   | component value; one `Property<T>` field per prop                |
-| `impl CardComponent { fn new() }`        | constructor                                                      |
-| `impl CardComponent { fn prop(...) }`    | one setter per prop                                              |
-| `impl Default for CardComponent`         | delegates to `new()`                                             |
-| `impl Component for CardComponent`       | your function body, with prop bindings                           |
-| `impl ChildrenExt for CardComponent`     | `.child(...)`, `.children(...)` on the component value           |
-| `impl KeyExt for CardComponent`          | `.key(...)`                                                      |
-| `impl BackgroundExt for CardComponent`   | `.bg_white()`, `.bg_primary()`, `.background(...)`, …            |
-| `impl ForegroundExt for CardComponent`   | `.text_pink()`, `.text_sm()`, `.text_bold()`, `.text_white()`, … |
-| `impl SpacingExt for CardComponent`      | `.p_6()`, `.px_4()`, `.py_3()`, `.m_6()`, `.mt_2()`, …           |
-| `impl SizingExt for CardComponent`       | `.w_full()`, `.h_full()`, `.width(...)`, `.height(...)`, …       |
-| `impl BorderExt for CardComponent`       | `.border(...)`, per-side borders                                 |
-| `impl EffectsExt for CardComponent`      | `.opacity(...)`, `.blur(...)`, shadows                           |
-| `impl CornerRadiusExt for CardComponent` | `.rounded()`, `.rounded_full()`, `.corner_radius(...)`, …        |
-| `macro_rules! Card`                      | companion call-site sugar                                        |
+```rust
+#[component(subtitle: String)]
+#[struct_fields(tooltip: MyTooltip, hover_count: usize = 0)]
+#[extensions(children, key, style)]
+#[derive(Clone, Debug, PartialEq)]
+fn Card(name: String) { /* … */ }
+```
 
-### Crate re-exports
+the macro emits:
 
-| Item        | From             |
-|-------------|------------------|
-| `component` | `freyacn_macros` |
+```rust
+// User doc comments, then the generated summary, then user attributes.
+#[derive(Clone, Debug, PartialEq)]          // ← forwarded from the user
+pub struct CardComponent {
+    // ── Attribute props ──
+    pub subtitle: Option<String>,           // optional
+
+    // ── Struct fields ──
+    pub tooltip: Option<MyTooltip>,         // optional
+    pub hover_count: usize,                 // with default
+
+    // ── Required prop (fn param) ──
+    pub name: Option<String>,               // required
+
+    // ── Extension fields ──
+    pub children: Vec<Element>,
+    pub key: DiffKey,
+    pub style: Style,
+}
+
+impl CardComponent {
+    pub fn new() -> Self { /* … */ }
+
+    // One setter per prop — no setters for struct fields or extension fields.
+    pub fn name(self, value: impl Into<String>) -> Self { /* … */ }
+    pub fn subtitle(self, value: impl Into<Option<String>>) -> Self { /* … */ }
+}
+
+impl Default for CardComponent { /* delegates to new() */ }
+
+impl freyacn::ChildrenExt for CardComponent { /* … */ }
+impl freyacn::KeyExt for CardComponent { /* … */ }
+impl freyacn::StyleExt for CardComponent { /* … */ }
+
+impl freyacn::Component for CardComponent {
+    fn render(&self) -> impl freyacn::IntoElement {
+        let children: &Vec<Element> = &self.children;
+        let key: &DiffKey = &self.key;
+        let style: &Style = &self.style;
+
+        let subtitle: &Option<String> = &self.subtitle;
+        let tooltip: &Option<MyTooltip> = &self.tooltip;
+        let hover_count: &usize = &self.hover_count;
+
+        let name: &String = self.name.as_ref()
+            .expect("required prop `name` was not set before render");
+
+        /* original function body */
+    }
+}
+
+pub fn Card() -> CardComponent { CardComponent::new() }
+
+#[macro_export]
+macro_rules! Card {
+    ($($key:ident = $val:expr),* $(,)?) => {
+        CardComponent::new()$(.$key($val))*
+    };
+}
+```
+
+Every item carries generated documentation describing the props, struct fields, and extensions applied — so
+`cargo doc` produces a complete reference for free.
+
+---
+
+## Compile errors
+
+The macro emits pointed errors for common mistakes.
+
+### Name in both fn param and attribute prop
+
+```rust
+#[component(name: String = "ada".to_string())]
+fn Card(name: String) { /* … */ }
+```
+
+```
+error: `name` is declared more than once (a function parameter and an attribute
+       prop (`#[component(...)]`)). Each field name may be used by exactly one
+       declaration.
+```
+
+### Missing type in `#[component(...)]` or `#[struct_fields(...)]`
+
+```rust
+#[component(name)]
+fn Card() { /* … */ }
+```
+
+```
+error: missing type — every field must declare its type, e.g. `name: String`.
+       (Required props are declared via the function signature instead.)
+```
+
+### `required` keyword
+
+```rust
+#[component(required name: String)]
+fn Card(name: String) { /* … */ }
+```
+
+```
+error: `required` is not a keyword. Function parameters are the only way to
+       declare required props: `fn Card(name: String)`. Attribute props are
+       optional (or defaulted with `= expr`).
+```
+
+### Collision with an extension field
+
+```rust
+#[component(children: Vec<Element>)]
+#[extensions(children)]
+fn Broken() { /* … */ }
+```
+
+```
+error: `children` collides with a field contributed by `#[extensions(...)]`.
+       Extension fields are reserved by freyacn and cannot be shadowed by an
+       attribute prop (`#[component(...)]`).
+```
+
+```rust
+#[struct_fields(children: Vec<Element>)]
+#[extensions(children)]
+fn Broken() { /* … */ }
+```
+
+```
+error: `children` collides with a field contributed by `#[extensions(...)]`.
+       Extension fields are reserved by freyacn and cannot be shadowed by a
+       struct field (`#[struct_fields(...)]`).
+```
+
+### Same name declared twice
+
+```rust
+#[component(tooltip: String)]
+#[struct_fields(tooltip: MyTooltip)]
+fn Broken() { /* … */ }
+```
+
+```
+error: `tooltip` is declared more than once (an attribute prop
+       (`#[component(...)]`) and a struct field (`#[struct_fields(...)]`)).
+       Each field name may be used by exactly one declaration.
+```
+
+---
+
+## Standalone `#[extensions(...)]`
+
+For hand‑written structs that are not generated by `#[component]`:
+
+```rust
+use freyacn::extensions;
+
+#[extensions(children, key)]
+#[derive(Clone, PartialEq, Default)]
+pub struct PlainBox;
+```
+
+The macro appends the requested fields and their trait impls. The struct must derive or implement `Default` so the added
+fields can be initialised.
+
+---
+
+## Full example
+
+```rust
+use freyacn::{component, extensions, struct_fields, StyleExt};
+use freya::prelude::*;
+
+/// A labelled card with optional subtitle, children, styling and a custom
+/// tooltip that the user's own trait impl manages.
+#[component(subtitle: String, badge: String = "new".to_string())]
+#[struct_fields(tooltip: MyTooltip, hover_count: usize = 0)]
+#[derive(Clone, PartialEq)]
+#[extensions(children, key, style)]
+fn Card(name: String) {
+    let tip_text = tooltip.as_ref().map(|t| t.text.as_str()).unwrap_or("");
+
+    rect()
+        .background(style.background)
+        .corner_radius(style.corner_radius)
+        .padding(style.padding)
+        .child(
+            rect()
+                .child(label().text(name.as_str()))
+                .child(match subtitle {
+                    Some(s) => label().text(s.as_str()).into(),
+                    None => rect().into(),
+                })
+                .child(label().text(tip_text)),
+        )
+        .children(children.clone())
+        .into()
+}
+
+#[derive(Default)]
+pub struct MyTooltip {
+    pub text: String,
+    pub visible: bool,
+}
+
+pub trait TooltipExt {
+    fn set_tooltip(&mut self, text: impl Into<String>);
+}
+
+impl TooltipExt for CardComponent {
+    fn set_tooltip(&mut self, text: impl Into<String>) {
+        let tip = self.tooltip.get_or_insert_with(MyTooltip::default);
+        tip.text = text.into();
+    }
+}
+
+fn app() -> IntoElement {
+    let mut card = Card()
+        .name("Account")
+        .subtitle("Personal information")   // auto-wrapped in Some
+        .badge("verified")
+        .bg_white()
+        .p_6()
+        .gap_4()
+        .corner_radius(12.0)
+        .shadow_md()
+        .class("border-2 border-slate-200")
+        .child(label().text("Settings go here"));
+
+    card.set_tooltip("Click to edit");
+    card.hover_count = 3;
+
+    card.into()
+}
+```
 
 ---
 
 ## Design notes
 
-### Why `Property<T>` instead of `Option<&T>`?
+**Why does each source decide the prop kind?**
+Keeping required props in the signature means the compiler enforces them — you can't forget to declare them, and the
+render body can rely on `&T` without unwrapping. Optional props live in the attribute because their type (`Option<T>`)
+is a wrapping decision the macro can make for you. Defaulted props live in the attribute because the default expression
+*is* an attribute‑only concept.
 
-An optional prop would naturally be `Option<&T>`, but reading it ergonomically requires a fallback, and a fallback needs
-somewhere to live. `Property<T>`
-stores the fallback as a real `T`, so `get_ref()` can hand out a `&T` that outlives any temporary — the same reason
-`dioxus::OptionalProp` exists.
+**Why `impl Into<Option<T>>` for optional setters?**
+Because std already gives us `From<T> for Option<T>` and `From<T> for T`, so the same setter accepts a bare `T`
+(auto‑wrapped), an `Option<T>` (identity), and `None` — all with a single signature and no runtime overhead.
 
-### Why a macro for the call site?
+**Why is `#[struct_fields(...)]` separate from `#[component(...)]`?**
+Because the two declare different things. `#[component(...)]` declares the component's **public API** — each entry
+becomes a chainable setter, is documented as a prop, and is part of the surface other code uses. `#[struct_fields(...)]`
+declares **internal storage** — no setter, documented separately, used only by the component's own trait impls. Merging
+them would force users to pick a documentation section that misrepresents one of the two.
 
-Rust has no default or named arguments, so `Card(title = "hi")` is not expressible as an ordinary function. The
-companion `macro_rules!` restores the syntax at the cost of IDE inlay hints — rust-analyzer cannot show parameter hints
-for arbitrary macro input. If IDE feedback matters more than compactness, use the struct API instead:
+**Why a compile error instead of a silent override for name collisions?**
+Silent override hides a real bug: the user has declared the same thing twice. Refusing to compile is the loudest,
+earliest signal.
 
-```rust
-CardComponent::new().title("hi")
-```
+**Why are extension fields appended after props and struct fields?**
+Props and struct fields are what the user wrote; extensions are opt‑in machinery. Putting user‑written declarations
+first keeps the common case at the top of the struct.
 
-The struct API gets full autocompletion, hover docs, and go-to-definition — and it exposes the extension-trait methods
-just the same.
+**Why generate a free function *and* a macro with the same name?**
+They live in different Rust namespaces (value vs macro), so there's no conflict. The function is the zero‑argument fast
+path; the macro adds named‑argument construction. Both are documented.
 
-### Why panic for required props?
+**Why forward user attributes instead of baking in derives?**
+Because the right set of derives depends on how the component is used: a component used as a React‑style keyed child
+needs `PartialEq`; one stored in a collection needs `Clone`; one inspected during debugging needs `Debug`. Baking any of
+them in forces users to accept them and hides the cost. Forwarding keeps the macro agnostic — the user writes what they
+want and sees the exact set of traits the struct implements in its source. The same mechanism transparently supports
+`#[cfg(...)]`, custom attribute macros, and marker attributes without the macro having to know about them.
 
-Enforcing required props at compile time needs a type-state builder, which means a much larger macro. The runtime panic
-is a deliberate trade-off: it costs a render-time crash on a programming error, and it buys a much smaller, more
-readable expansion. Required props declared as function parameters get partial compile-time help from rust-analyzer
-anyway.
-
-### Why interior mutability?
-
-`Property<T>` is `Arc<RwLock<Option<T>>>`. This makes it `Clone`, `Send +
-Sync` when `T` is, and lets setters take `&self` — which in turn lets the generated struct derive `Clone` without any
-bounds on `T`. It also matches the way UI frameworks share state across a tree.
-
-### Why implement the Freya extension traits on the generated struct?
-
-Because a component is just a value that eventually lowers to an `Element`, there is no reason to force callers to wrap
-or unwrap it before styling. Implementing `ChildrenExt`, `KeyExt`, `BackgroundExt`,
-`ForegroundExt`, `SpacingExt`, `SizingExt`, `BorderExt`, `EffectsExt`, and `CornerRadiusExt` on the struct means the
-call site reads exactly the same whether you are styling a raw `Rect` or a `Button!()`. It is also what makes
-tailwind-style utilities — `bg_white`, `bg_primary`, `p_6`, `text_pink`, `text_sm`, `rounded` — available directly on a
-component value, so the styling vocabulary never changes between raw IntoElements and components.
-
-### On `Display` and `Deref` for `PropertyRef`
-
-`PropertyRef` implements `Deref<Target = T>`, so `&*prop` gives `&T` and
-`prop.len()` calls through to `T::len`. Pattern matching does not see through `Deref` — use `prop.as_option()` if you
-want to match `Some` / `None`.
+**Why is there a stub `#[struct_fields]` proc‑macro?**
+Because attribute macros are processed top‑to‑bottom. If `#[struct_fields(...)]` is placed above `#[component(...)]`,
+the compiler reaches `struct_fields` first — and without a stub, it errors with "cannot find attribute". The stub exists
+only to produce a friendly message. When the ordering is correct, `#[component]` consumes the attribute before the
+compiler ever sees the stub, so the stub never fires.
 
 ---
 
 ## License
 
-Apache-2.0.
+Apache‑2.0.
+
+[freyacn]: https://crates.io/crates/freyacn
+[freya]: https://crates.io/crates/freya

@@ -1,61 +1,53 @@
-//! Procedural macros for the `freyacn` crate.
-//!
-//! The `#[component]` attribute turns a plain function into a component
-//! struct with:
-//!
-//! - one field per prop,
-//! - a `new()` constructor and one `impl Into<T>`-accepting setter per prop,
-//! - a `Default` impl delegating to `new()`,
-//! - a `Render` impl whose body sees ergonomic prop bindings,
-//! - `From<Struct> for Element`,
-//! - a companion `macro_rules!` named after the function.
+//! The `#[component]` attribute macro.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Expr, FnArg, Ident, ItemFn, Pat, PatType, Token, Type,
+    Attribute, Expr, FnArg, Ident, ItemFn, Pat, PatType, Token, Type,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
 
-// Custom keyword so users can write `required name: Type`.
-mod kw {
-    syn::custom_keyword!(required);
-}
+use crate::extension;
 
 // ---------------------------------------------------------------------------
-// Attribute parsing
+// Attribute prop parsing
 // ---------------------------------------------------------------------------
+//
+// Grammar (shared by `#[component(...)]` and `#[struct_fields(...)]`):
+//
+//     prop := ident ":" type [ "=" expr ]
+//     list := prop { "," prop } [ "," ]
 
-/// A single declaration inside `#[props(...)]`:
-///
-/// ```text
-/// [required] name[: Type][ = default_expr]
-/// ```
 struct PropDecl {
-    required: bool,
     name: Ident,
-    ty: Option<Type>,
+    ty: Type,
     default: Option<Expr>,
 }
 
 impl Parse for PropDecl {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let required = if input.peek(kw::required) {
-            input.parse::<kw::required>()?;
-            true
-        } else {
-            false
-        };
-
         let name: Ident = input.parse()?;
 
-        let ty = if input.peek(Token![:]) {
-            input.parse::<Token![:]>()?;
-            Some(input.parse()?)
-        } else {
-            None
-        };
+        if name == "required" {
+            return Err(syn::Error::new_spanned(
+                &name,
+                "`required` is not a keyword. Function parameters are the only \
+                 way to declare required props: `fn Card(name: String)`. \
+                 Attribute props are optional (or defaulted with `= expr`).",
+            ));
+        }
+
+        if !input.peek(Token![:]) {
+            return Err(syn::Error::new_spanned(
+                &name,
+                "missing type — every field must declare its type, e.g. \
+                 `name: String`. (Required props are declared via the function \
+                 signature instead.)",
+            ));
+        }
+        input.parse::<Token![:]>()?;
+        let ty: Type = input.parse()?;
 
         let default = if input.peek(Token![=]) {
             input.parse::<Token![=]>()?;
@@ -64,7 +56,7 @@ impl Parse for PropDecl {
             None
         };
 
-        Ok(Self { required, name, ty, default })
+        Ok(Self { name, ty, default })
     }
 }
 
@@ -78,44 +70,134 @@ impl Parse for PropsList {
 }
 
 // ---------------------------------------------------------------------------
-// Resolved prop
+// Resolved fields
 // ---------------------------------------------------------------------------
 
 enum PropKind {
-    /// `name: Type` — field is `Option<Type>`.
-    /// Body binding is `Prop<'_, Type>` (or `Option<&Type>` if `Type` itself
-    /// is `Option<...>`). No `Default` bound unless `T` is used via deref.
-    Optional,
-
-    /// `required name: Type` — field is `Option<Type>`.
-    /// Body binding is `&Type`; panics at render time if never set.
+    /// From a function parameter. Stored as `Option<T>`, initialised to
+    /// `None`, body sees `&T` (panics if unset).
     Required,
-
-    /// `name: Type = expr` — field is `Type`, initialised in `new()`.
-    /// Body binding is `&Type`.
+    /// No default. Stored as `Option<T>`, initialised to `None`, body sees
+    /// `&Option<T>`.
+    Optional,
+    /// Has `= expr`. Stored as `T`, initialised with `expr`, body sees `&T`.
     WithDefault(Expr),
+}
+
+/// Where a field came from. Used to decide whether to emit a setter, how to
+/// document the field, and how to phrase collision errors.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PropSource {
+    /// `fn Card(name: String)` — a required prop.
+    FnParam,
+    /// `#[component(name: String)]` — an optional or defaulted prop.
+    AttrProp,
+    /// `#[struct_fields(name: Type)]` — internal storage.
+    StructField,
+}
+
+fn source_label(source: PropSource) -> &'static str {
+    match source {
+        PropSource::FnParam => "a function parameter",
+        PropSource::AttrProp => "an attribute prop (`#[component(...)]`)",
+        PropSource::StructField => "a struct field (`#[struct_fields(...)]`)",
+    }
 }
 
 struct Prop {
     name: Ident,
     ty: Type,
     kind: PropKind,
+    source: PropSource,
 }
-
 
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-
 pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
-    let func: ItemFn = syn::parse2(item)?;
+    let mut func: ItemFn = syn::parse2(item)?;
 
-    let fn_ident = format_ident!("{}", to_pascal_case(&func.sig.ident.to_string()));
+    // =====================================================================
+    // 0. Extract attributes.
+    // =====================================================================
+
+    // ---- 0a. `#[struct_fields(...)]` — pulled out first. ----
+    let mut struct_field_decls: Vec<PropDecl> = Vec::new();
+    let mut kept_attrs: Vec<Attribute> = Vec::new();
+    for a in std::mem::take(&mut func.attrs) {
+        if a.path().is_ident("struct_fields") {
+            let decls = a
+                .parse_args_with(Punctuated::<PropDecl, Token![,]>::parse_terminated)?;
+            struct_field_decls.extend(decls);
+        } else {
+            kept_attrs.push(a);
+        }
+    }
+    func.attrs = kept_attrs;
+
+    // ---- 0b. Preserve user doc comments. ----
+    let user_docs: Vec<Attribute> = func
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("doc"))
+        .cloned()
+        .collect();
+
+    // ---- 0c. `#[extensions(...)]` — pulled out second. ----
+    let mut extension_names: Vec<String> = Vec::new();
+    if let Some(pos) = func
+        .attrs
+        .iter()
+        .position(|a| a.path().is_ident("extensions"))
+    {
+        let a = func.attrs.remove(pos);
+        let tokens = a
+            .meta
+            .require_list()
+            .map_err(|_| {
+                syn::Error::new_spanned(
+                    &a,
+                    "expected `#[extensions(name1, name2, …)]`",
+                )
+            })?
+            .tokens
+            .clone();
+        extension_names = extension::parse_names(tokens)?;
+    }
+
+    // ---- 0d. Everything remaining is forwarded to the struct. ----
+    let forwarded_attrs: Vec<Attribute> = func
+        .attrs
+        .iter()
+        .filter(|a| !a.path().is_ident("doc"))
+        .cloned()
+        .collect();
+
+    // =====================================================================
+    // 1. Names.
+    // =====================================================================
+
+    let fn_name_str = func.sig.ident.to_string();
+    let fn_ident = format_ident!("{}", to_pascal_case(&fn_name_str));
     let struct_ident = format_ident!("{}Component", fn_ident);
     let vis = func.vis.clone();
 
-    // ---- collect fn parameters (for type inference / required props) ----
+    // =====================================================================
+    // 2. Extension bundle.
+    // =====================================================================
+
+    let extensions_code = extension::collect(&struct_ident, &extension_names)?;
+    let ext_field_defs = &extensions_code.field_defs;
+    let ext_field_inits = &extensions_code.field_inits;
+    let ext_local_bindings = &extensions_code.local_bindings;
+    let ext_trait_impls = &extensions_code.trait_impls;
+    let ext_field_names = extension::collect_field_names(&extension_names);
+
+    // =====================================================================
+    // 3. Function parameters (all required).
+    // =====================================================================
+
     let fn_params: Vec<(Ident, Type)> = func
         .sig
         .inputs
@@ -129,130 +211,387 @@ pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<To
         })
         .collect();
 
-    // ---- parse `#[component(props...)]` if present ----
-    let PropsList(decls) = syn::parse2::<PropsList>(attr)?;
-    let decls: Vec<PropDecl> = decls;
+    // =====================================================================
+    // 4. `#[component(...)]` argument.
+    // =====================================================================
 
-    // ---- resolve each declared prop ----
+    let PropsList(decls) = syn::parse2::<PropsList>(attr)?;
+
+    // =====================================================================
+    // 5. Build `props` in declaration order:
+    //       attribute props → struct fields → fn params.
+    // =====================================================================
+
     let mut props: Vec<Prop> = Vec::new();
 
+    // Attribute props.
     for decl in decls {
-        let ty = match decl.ty {
-            Some(t) => t,
-            None => fn_params
-                .iter()
-                .find(|(n, _)| *n == decl.name)
-                .map(|(_, t)| t.clone())
-                .ok_or_else(|| {
-                    syn::Error::new_spanned(
-                        &decl.name,
-                        format!(
-                            "prop `{}` has no type and no matching function parameter",
-                            decl.name
-                        ),
-                    )
-                })?,
+        let kind = match decl.default {
+            Some(expr) => PropKind::WithDefault(expr),
+            None => PropKind::Optional,
         };
-
-        let kind = if let Some(expr) = decl.default {
-            PropKind::WithDefault(expr)
-        } else if decl.required {
-            PropKind::Required
-        } else {
-            PropKind::Optional
-        };
-
         props.push(Prop {
             name: decl.name,
-            ty,
+            ty: decl.ty,
             kind,
+            source: PropSource::AttrProp,
         });
     }
 
-    // ---- fn params not listed in `#[component(props...)]` become required props ----
+    // Struct fields.
+    for decl in struct_field_decls {
+        let kind = match decl.default {
+            Some(expr) => PropKind::WithDefault(expr),
+            None => PropKind::Optional,
+        };
+        props.push(Prop {
+            name: decl.name,
+            ty: decl.ty,
+            kind,
+            source: PropSource::StructField,
+        });
+    }
+
+    // Function parameters.
     for (name, ty) in &fn_params {
-        if !props.iter().any(|p| &p.name == name) {
-            props.push(Prop {
-                name: name.clone(),
-                ty: ty.clone(),
-                kind: PropKind::Required,
-            });
+        props.push(Prop {
+            name: name.clone(),
+            ty: ty.clone(),
+            kind: PropKind::Required,
+            source: PropSource::FnParam,
+        });
+    }
+
+    // =====================================================================
+    // 6. Collision checks.
+    // =====================================================================
+
+    // 6a. Duplicate names anywhere in `props`.
+    let mut seen: std::collections::HashMap<String, PropSource> =
+        std::collections::HashMap::new();
+    for prop in &props {
+        let key = prop.name.to_string();
+        if let Some(previous) = seen.get(&key) {
+            return Err(syn::Error::new_spanned(
+                &prop.name,
+                format!(
+                    "`{key}` is declared more than once ({} and {}). \
+                     Each field name may be used by exactly one declaration.",
+                    source_label(*previous),
+                    source_label(prop.source),
+                ),
+            ));
+        }
+        seen.insert(key, prop.source);
+    }
+
+    // 6b. Extension fields are reserved by freyacn.
+    for prop in &props {
+        if ext_field_names.iter().any(|n| n == &prop.name.to_string()) {
+            return Err(syn::Error::new_spanned(
+                &prop.name,
+                format!(
+                    "`{}` collides with a field contributed by \
+                     `#[extensions(...)]`. Extension fields are reserved by \
+                     freyacn and cannot be shadowed by {}.",
+                    prop.name,
+                    source_label(prop.source),
+                ),
+            ));
         }
     }
 
-    // ---- struct fields ----
-    let struct_fields = props.iter().map(|p| {
+    // =====================================================================
+    // 7. Struct fields  (props → struct fields → extension fields).
+    // =====================================================================
+
+    let prop_fields = props.iter().map(|p| {
         let name = &p.name;
         let ty = &p.ty;
-        quote! { #vis #name: ::freyacn::Property<#ty> }
+        let ty_str = quote!(#ty).to_string().replace(' ', "");
+
+        let (storage_ty, doc) = match (&p.kind, p.source) {
+            (PropKind::Required, _) => (
+                quote! { ::core::option::Option<#ty> },
+                format!(
+                    "The `{name}` prop (`{ty_str}`).\n\n\
+                     **Required.** Declared as a function parameter; stored as \
+                     `Option<{ty_str}>` and initialised to `None`. The render \
+                     body unwraps it and panics if it was never set.\n\n\
+                     Set via [`Self::{name}`]."
+                ),
+            ),
+            (PropKind::Optional, PropSource::StructField) => (
+                quote! { ::core::option::Option<#ty> },
+                format!(
+                    "Internal storage field `{name}` (`{ty_str}`).\n\n\
+                     **Struct field.** Declared via `#[struct_fields(...)]`; \
+                     initialised to `None`. No setter is generated — the user \
+                     manages this field through their own trait impls.\n\n\
+                     The render body sees `&Option<{ty_str}>`."
+                ),
+            ),
+            (PropKind::Optional, _) => (
+                quote! { ::core::option::Option<#ty> },
+                format!(
+                    "The `{name}` prop (`{ty_str}`).\n\n\
+                     **Optional.** Declared in `#[component]` without a \
+                     default; stored as `Option<{ty_str}>` and initialised to \
+                     `None`. The render body sees `&Option<{ty_str}>`.\n\n\
+                     Set via [`Self::{name}`]."
+                ),
+            ),
+            (PropKind::WithDefault(_), PropSource::StructField) => (
+                quote! { #ty },
+                format!(
+                    "Internal storage field `{name}` (`{ty_str}`).\n\n\
+                     **Struct field.** Declared via `#[struct_fields(...)]` with \
+                     a default expression; initialised with it in \
+                     [`Self::new`]. No setter is generated.\n\n\
+                     The render body sees `&{ty_str}`."
+                ),
+            ),
+            (PropKind::WithDefault(_), _) => (
+                quote! { #ty },
+                format!(
+                    "The `{name}` prop (`{ty_str}`).\n\n\
+                     **Defaulted.** Declared in `#[component]` with a default \
+                     expression; stored as `{ty_str}` and initialised with it \
+                     in [`Self::new`]. The render body sees `&{ty_str}`.\n\n\
+                     Set via [`Self::{name}`]."
+                ),
+            ),
+        };
+
+        quote! {
+            #[doc = #doc]
+            #vis #name: #storage_ty
+        }
     });
 
-    // ---- `new()` initialisers ----
-    let new_inits = props.iter().map(|p| {
+    // =====================================================================
+    // 8. `new()` initialisers.
+    // =====================================================================
+
+    let prop_inits = props.iter().map(|p| {
         let name = &p.name;
         match &p.kind {
-            PropKind::Optional => quote! {
-                #name: ::freyacn::Property::optional()
-            },
-            PropKind::Required => quote! {
-                #name: ::freyacn::Property::required()
+            PropKind::Required | PropKind::Optional => quote! {
+                #name: ::core::option::Option::None
             },
             PropKind::WithDefault(expr) => quote! {
-                #name: ::freyacn::Property::with_default(#expr)
+                #name: #expr
             },
         }
     });
 
-    // ---- uniform setters on `Self` ----
-    //
-    // Every prop has the same signature:  `fn name(self, impl Into<T>) -> Self`
-    // `Property::set` uses interior mutability, so `self` does not need to be
-    // `mut`
-    let setters = props.iter().map(|p| {
+    // =====================================================================
+    // 9. Setters — attribute props and fn params only.
+    // =====================================================================
+
+    let prop_setters = props
+        .iter()
+        .filter(|p| p.source != PropSource::StructField)
+        .map(|p| {
+            let name = &p.name;
+            let ty = &p.ty;
+            let ty_str = quote!(#ty).to_string().replace(' ', "");
+
+            let (accepts, doc) = match &p.kind {
+                PropKind::Required => (
+                    quote! { impl ::core::convert::Into<#ty> },
+                    format!(
+                        "Set the [`{name}`](Self::{name}) prop.\n\n\
+                         Required prop — accepts any type convertible into \
+                         `{ty_str}`. Passing `None` or `Some(…)` is a type \
+                         error, which is intentional."
+                    ),
+                ),
+                PropKind::Optional => (
+                    quote! { impl ::core::convert::Into<::core::option::Option<#ty>> },
+                    format!(
+                        "Set the [`{name}`](Self::{name}) prop.\n\n\
+                         Optional prop. Accepts a bare `{ty_str}` (auto-wrapped \
+                         into `Some` via std's `From<T> for Option<T>`) or an \
+                         `Option<{ty_str}>` directly."
+                    ),
+                ),
+                PropKind::WithDefault(_) => (
+                    quote! { impl ::core::convert::Into<#ty> },
+                    format!(
+                        "Set the [`{name}`](Self::{name}) prop.\n\n\
+                         Defaulted prop — accepts any type convertible into \
+                         `{ty_str}`."
+                    ),
+                ),
+            };
+
+            quote! {
+                #[doc = #doc]
+                #[allow(dead_code)]
+                #vis fn #name(
+                    mut self,
+                    value: #accepts,
+                ) -> Self {
+                    self.#name = ::core::convert::Into::into(value);
+                    self
+                }
+            }
+        });
+
+    // =====================================================================
+    // 10. Render-body bindings.
+    // =====================================================================
+
+    let prop_bindings = props.iter().map(|p| {
         let name = &p.name;
         let ty = &p.ty;
-        quote! {
-            #[allow(dead_code)]
-            #vis fn #name(
-                self,
-                value: impl ::core::convert::Into<#ty>,
-            ) -> Self {
-                ::freyacn::Property::set(
-                    &self.#name,
-                    ::core::convert::Into::into(value),
-                );
-                self
-            }
-        }
-    });
-
-    // ---- uniform render-time bindings ----
-    //
-    // Every prop is bound as `&Property<T>`. The body reads with
-    // `.get()`, `.with(...)`, `.get_ref()`, and mutates with `.set(...)`
-    let render_bindings = props.iter().map(|p| {
-        let name = &p.name;
-        quote! {
-            let #name = &self.#name;
+        match &p.kind {
+            PropKind::Required => quote! {
+                let #name: &#ty = self
+                    .#name
+                    .as_ref()
+                    .expect(::core::concat!(
+                        "required prop `",
+                        ::core::stringify!(#name),
+                        "` was not set before render"
+                    ));
+            },
+            PropKind::Optional => quote! {
+                let #name: &::core::option::Option<#ty> = &self.#name;
+            },
+            PropKind::WithDefault(_) => quote! {
+                let #name: &#ty = &self.#name;
+            },
         }
     });
 
     let body = &func.block;
 
-    // ---- companion `macro_rules!` ----
-    //
-    // `#[macro_export]` hoists the macro to the crate root. The body refers
-    // to `#struct_ident` unqualified, so at the call site the struct must be
-    // in scope. This is the standard trade-off for proc-macro-generated
-    // macros
+    // =====================================================================
+    // 11. Generated documentation.
+    // =====================================================================
+
+    // 11a. Public prop summary.
+    let prop_summary: Vec<String> = props
+        .iter()
+        .filter(|p| p.source != PropSource::StructField)
+        .map(|p| {
+            let ty = &p.ty;
+            let ty_str = quote!(#ty).to_string().replace(' ', "");
+            let kind = match &p.kind {
+                PropKind::Required => "required (fn param)",
+                PropKind::Optional => "optional",
+                PropKind::WithDefault(_) => "with default",
+            };
+            format!("* `{}`: `{}` — {}", p.name, ty_str, kind)
+        })
+        .collect();
+
+    let props_section = if prop_summary.is_empty() {
+        "*No props.*".to_string()
+    } else {
+        prop_summary.join("\n")
+    };
+
+    // 11b. Struct field summary.
+    let struct_field_summary: Vec<String> = props
+        .iter()
+        .filter(|p| p.source == PropSource::StructField)
+        .map(|p| {
+            let ty = &p.ty;
+            let ty_str = quote!(#ty).to_string().replace(' ', "");
+            let kind = match &p.kind {
+                PropKind::Optional => "`None`",
+                PropKind::WithDefault(_) => "with default",
+                PropKind::Required => unreachable!(),
+            };
+            format!("* `{}`: `{}` — {}", p.name, ty_str, kind)
+        })
+        .collect();
+
+    let struct_fields_section = if struct_field_summary.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n## Struct fields\n\n\
+             Internal storage. No setters are generated; manage these fields \
+             via your own trait impls.\n\n{}",
+            struct_field_summary.join("\n"),
+        )
+    };
+
+    // 11c. Extensions summary.
+    let ext_section = if extension_names.is_empty() {
+        "*No extensions.*".to_string()
+    } else {
+        extension_names
+            .iter()
+            .map(|n| format!("* `{n}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let struct_doc = format!(
+        "Component generated from the function `{fn_name}`.\n\n\
+         ## Props\n\n{props_section}\
+         {struct_fields_section}\n\n\
+         ## Extensions\n\n{ext_section}",
+        fn_name = fn_name_str,
+    );
+
+    let new_doc = format!(
+        "Create a new [`{struct_ident}`] with every prop in its initial state.\n\n\
+         Chain setters to configure props:\n\n\
+         ```ignore\n\
+         {struct_ident}::new().prop1(value1).prop2(value2)\n\
+         ```"
+    );
+
+    let ctor_doc = format!(
+        "Construct a new [`{struct_ident}`].\n\n\
+         Equivalent to [`{struct_ident}::new`]. Chain setters to configure props:\n\n\
+         ```ignore\n\
+         {fn_ident}().prop1(value1).prop2(value2)\n\
+         ```"
+    );
+
+    let render_doc = format!(
+        "Renders this [`{struct_ident}`].\n\n\
+         Props are bound by reference as locals: required and defaulted props \
+         as `&T`, optional props and struct fields as `&Option<T>`. Extension \
+         fields are bound the same way."
+    );
+
+    let macro_doc = format!(
+        "Sugar macro for constructing [`{struct_ident}`].\n\n\
+         ```ignore\n\
+         {fn_ident}!(prop1 = value1, prop2 = value2)\n\
+         ```"
+    );
+
+    // =====================================================================
+    // 12. Component impl.
+    // =====================================================================
+
+    let component_trait_impl = quote! {
+        impl ::freyacn::Component for #struct_ident {
+            #[doc = #render_doc]
+            fn render(&self) -> impl ::freyacn::IntoElement {
+                #(#ext_local_bindings)*
+                #(#prop_bindings)*
+                #body
+            }
+        }
+    };
+
+    // =====================================================================
+    // 13. Companion macro.
+    // =====================================================================
+
     let companion_macro = quote! {
-        /// Sugar for chaining setter calls on the generated component struct.
-        ///
-        /// ```ignore
-        /// Card!()
-        /// Card!(title = "hi")
-        /// Card!(title = "hi", name = "there")
-        /// ```
+        #[doc = #macro_doc]
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #fn_ident {
             ($($key:ident = $val:expr),* $(,)?) => {
@@ -261,211 +600,52 @@ pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<To
         }
     };
 
-    // ---- final expansion ----
+    // =====================================================================
+    // 14. Final expansion.
+    // =====================================================================
+
     let expanded = quote! {
-        #[derive(::core::clone::Clone, ::core::cmp::PartialEq)]
+        // 1. User doc comments on the function.
+        #(#user_docs)*
+        // 2. Generated summary.
+        #[doc = ""]
+        #[doc = #struct_doc]
+        // 3. Every other attribute the user wrote on the function, verbatim.
+        #(#forwarded_attrs)*
         #vis struct #struct_ident {
-            elements: Vec<Element>,
-            key: ::freyacn::DiffKey,
-            corner_radius: f32,
-            background: ::core::option::Option<::freyacn::Color>,
-            text_color: ::core::option::Option<::freyacn::Color>,
-            padding_override: ::core::option::Option<::freyacn::Gaps>,
-            margin_override: ::core::option::Option<::freyacn::Gaps>,
-            width_override: ::core::option::Option<::freyacn::Size>,
-            height_override: ::core::option::Option<::freyacn::Size>,
-            min_width_override: ::core::option::Option<::freyacn::Size>,
-            min_height_override: ::core::option::Option<::freyacn::Size>,
-            max_width_override: ::core::option::Option<::freyacn::Size>,
-            max_height_override: ::core::option::Option<::freyacn::Size>,
-            border_width: ::core::option::Option<f32>,
-            border_color: ::core::option::Option<Color>,
-            opacity: ::core::option::Option<f32>,
-            shadow: ::core::option::Option<Shadow>,
-            #(#struct_fields,)*
+            #(#prop_fields,)*
+            #(#ext_field_defs,)*
         }
 
         impl #struct_ident {
+            #[doc = #new_doc]
             #[allow(dead_code)]
             #vis fn new() -> Self {
                 Self {
-                    corner_radius: 8.0,
-                    elements: Vec::new(),
-                    key: ::freyacn::DiffKey::None,
-                    background: ::core::option::Option::None,
-                    text_color: ::core::option::Option::None,
-                    padding_override: ::core::option::Option::None,
-                    margin_override: ::core::option::Option::None,
-                    width_override: ::core::option::Option::None,
-                    height_override: ::core::option::Option::None,
-                    min_width_override: ::core::option::Option::None,
-                    min_height_override: ::core::option::Option::None,
-                    max_width_override: ::core::option::Option::None,
-                    max_height_override: ::core::option::Option::None,
-                    border_width: ::core::option::Option::None,
-                    border_color: ::core::option::Option::None,
-                    opacity: ::core::option::Option::None,
-                    shadow: ::core::option::Option::None,
-                    #(#new_inits,)*
+                    #(#prop_inits,)*
+                    #(#ext_field_inits,)*
                 }
             }
 
-            pub fn corner_radius(mut self, corner_radius: f32) -> Self {
-                self.corner_radius = corner_radius;
-                self
-            }
-
-            #(#setters)*
+            #(#prop_setters)*
         }
 
+        #[doc = "Default constructor — delegates to [`Self::new`]."]
         impl ::core::default::Default for #struct_ident {
             fn default() -> Self {
                 Self::new()
             }
         }
-        
-        impl ::freyacn::ChildrenExt for #struct_ident {
-            fn get_children(&mut self) -> &mut Vec<::freyacn::Element> {
-                &mut self.elements
-            }
+
+        #[doc = #ctor_doc]
+        #[allow(non_snake_case)]
+        #vis fn #fn_ident() -> #struct_ident {
+            #struct_ident::new()
         }
 
-        impl ::freyacn::KeyExt for #struct_ident {
-            fn write_key(&mut self) -> &mut ::freyacn::DiffKey {
-                &mut self.key
-            }
-        }
+        #(#ext_trait_impls)*
 
-        impl ::freyacn::BackgroundExt for #struct_ident {
-            fn background(mut self, color: ::freyacn::Color) -> Self {
-                self.background = Some(color);
-                self
-            }
-        }
-
-        impl ::freyacn::ForegroundExt for #struct_ident {
-            fn color(mut self, color: ::freyacn::Color) -> Self {
-                self.text_color = Some(color);
-                self
-            }
-        }
-
-        impl ::freyacn::SpacingExt for #struct_ident {
-            fn padding(mut self, gaps: impl Into<::freyacn::Gaps>) -> Self {
-                self.padding_override = Some(gaps.into());
-                self
-            }
-
-            fn margin(mut self, gaps: impl Into<::freyacn::Gaps>) -> Self {
-                self.margin_override = Some(gaps.into());
-                self
-            }
-        }
-
-        impl ::freyacn::SizingExt for #struct_ident {
-            fn width(mut self, size: impl Into<::freyacn::Size>) -> Self {
-                self.width_override = Some(size.into());
-                self
-            }
-
-            fn height(mut self, size: impl Into<::freyacn::Size>) -> Self {
-                self.height_override = Some(size.into());
-                self
-            }
-
-            fn min_width(mut self, size: impl Into<::freyacn::Size>) -> Self {
-                self.min_width_override = Some(size.into());
-                self
-            }
-
-            fn min_height(mut self, size: impl Into<::freyacn::Size>) -> Self {
-                self.min_height_override = Some(size.into());
-                self
-            }
-
-            fn max_width(mut self, size: impl Into<::freyacn::Size>) -> Self {
-                self.max_width_override = Some(size.into());
-                self
-            }
-
-            fn max_height(mut self, size: impl Into<::freyacn::Size>) -> Self {
-                self.max_height_override = Some(size.into());
-                self
-            }
-        }
-
-        impl ::freyacn::BorderExt for #struct_ident {
-            fn border_width(mut self, width: f32) -> Self {
-                self.border_width = Some(width);
-                self
-            }
-
-            fn border_color(mut self, color: ::freyacn::Color) -> Self {
-                self.border_color = Some(color);
-                self
-            }
-
-            fn corner_radius(mut self, radius: impl Into<::freyacn::CornerRadius>) -> Self {
-                let radius = radius.into();
-                let uniform = radius
-                    .top_left
-                    .max(radius.top_right)
-                    .max(radius.bottom_left)
-                    .max(radius.bottom_right);
-                self.corner_radius = uniform;
-                self
-            }
-        }
-
-        impl ::freyacn::EffectsExt for #struct_ident {
-            fn opacity(mut self, opacity: f32) -> Self {
-                self.opacity = Some(opacity);
-                self
-            }
-
-            fn shadow(mut self, shadow: impl Into<Shadow>) -> Self {
-                self.shadow = Some(shadow.into());
-                self
-            }
-        }
-
-        impl ::freyacn::CornerRadiusExt for #struct_ident {
-            fn with_corner_radius(self, corner_radius: f32) -> Self {
-                self.corner_radius(corner_radius)
-            }
-        }
-
-        // ---- Color helpers ----
-        fn color_with_alpha(color: ::freyacn::Color, alpha: f32) -> ::freyacn::Color {
-            let r = color.r();
-            let g = color.g();
-            let b = color.b();
-            let a = (alpha * 255.0) as u8;
-            ::freyacn::Color::from_argb(a, r, g, b)
-        }
-
-        fn blend_colors(base: ::freyacn::Color, blend: ::freyacn::Color, ratio: f32) -> ::freyacn::Color {
-            let r1 = base.r() as f32;
-            let g1 = base.g() as f32;
-            let b1 = base.b() as f32;
-            let a1 = base.a() as f32 / 255.0;
-            let r2 = blend.r() as f32;
-            let g2 = blend.g() as f32;
-            let b2 = blend.b() as f32;
-            let a2 = blend.a() as f32 / 255.0;
-            let r = r1 + (r2 - r1) * ratio;
-            let g = g1 + (g2 - g1) * ratio;
-            let b = b1 + (b2 - b1) * ratio;
-            let a = a1 + (a2 - a1) * ratio;
-            ::freyacn::Color::from_argb((a * 255.0) as u8, r as u8, g as u8, b as u8)
-        }
-
-        impl ::freyacn::Component for #struct_ident {
-            fn render(&self) -> impl ::freyacn::IntoElement {
-                #(#render_bindings)*
-                #body
-            }
-        }
+        #component_trait_impl
 
         #companion_macro
     };
@@ -473,8 +653,7 @@ pub fn parse_component(attr: TokenStream2, item: TokenStream2) -> syn::Result<To
     Ok(expanded)
 }
 
-/// convert `snake_case` to `PascalCase`
-/// Handles leading underscores and digits gracefully
+/// Convert `snake_case` to `PascalCase`.
 pub fn to_pascal_case(s: &str) -> String {
     s.split('_')
         .filter(|s| !s.is_empty())
