@@ -1,10 +1,10 @@
 [package]
 name = "freyacn_macros"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Bright Madueke <maduekebright399@gmail.com>"]
 description = "Helper macros for freyacn"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/brightmadueke/freyacn-macros"
 readme = "README.md"
 keywords = ["ui", "freyacn", "proc_macro", "procmacro"]
